@@ -1,11 +1,17 @@
-# NWB Electrophysiology Analysis Pipeline
+# Electrophysiology Analysis Pipeline (NWB + ABF)
 
-This pipeline processes intracellular electrophysiology recordings stored in NWB (Neurodata Without Borders) format. It handles both **single protocol** (voltage-only or current-only) and **mixed protocol** (voltage + current) recordings.
+A unified pipeline for analyzing **intracellular electrophysiology recordings** from both:
+
+- **NWB (Neurodata Without Borders)** files  
+- **ABF (Axon Binary Format)** files  
+
+The pipeline performs **sweep classification, spike detection, membrane property analysis, and visualization** for current-clamp experiments.
 
 ---
 
 ## 📋 Table of Contents
 - [Overview](#overview)
+- [Supported File Types](#supported-file-types)
 - [Quick Start](#quick-start)
 - [Input Requirements](#input-requirements)
 - [Pipeline Workflow](#pipeline-workflow)
@@ -15,19 +21,38 @@ This pipeline processes intracellular electrophysiology recordings stored in NWB
 
 ---
 
-## Overview
+## 🧠 Overview
 
-### What This Pipeline Does
-1. **Classifies sweeps** - Identifies valid current-clamp recordings vs artifacts
-2. **Detects stimulus windows** - Finds baseline, stimulus, and response periods
-3. **Analyzes action potentials** - Detects spikes and extracts morphology features
-4. **Calculates RMP** - Measures resting membrane potential using Savitzky-Golay filtering
-5. **Computes input resistance** - Calculates membrane properties from hyperpolarizing steps
-6. **Generates visualizations** - Creates comprehensive plots and summary PDFs
+This pipeline processes electrophysiology recordings to extract:
 
-### Supported Protocols
-- **Single Protocol**: Voltage-only OR current-only recordings (e.g., Allen Brain Observatory)
-- **Mixed Protocol**: Voltage AND current recordings in same file (e.g., Zuckerman Lab data)
+- **Spike features** (threshold, peak, width, dV/dt)
+- **Resting membrane potential (RMP)**
+- **Input resistance**
+- **Sag current (HCN activity)**
+- **Sweep quality classification**
+- **Kink detection (pre-upstroke features)**
+
+It is designed to handle **real-world noisy biological data**, including:
+- multi-sweep recordings  
+- variable sampling rates  
+- mixed protocol experiments  
+
+---
+
+## 📁 Supported File Types
+
+### NWB (Neurodata Without Borders)
+- Standardized neuroscience format
+- Used in Allen Brain Observatory, Zuckerman Lab, etc.
+- Supports:
+  - single protocol (voltage-only / current-only)
+  - mixed protocol (stimulus + response)
+
+### ABF (Axon Binary Format)
+- Common in patch-clamp experiments
+- Typically noisier and less standardized than NWB
+- Requires more flexible filtering and classification
+
 
 ---
 
@@ -47,6 +72,23 @@ Sneha_NWB_Allen_brain/
 └── sub-1000610030/                             # Or organize in folders
     └── *.nwb
 ```
+Place ABF files in the workspace directory:
+```
+data/
+├── cell_001.abf
+├── cell_002.abf
+└── experiment_day_1/
+    └── *.abf
+```
+
+Or place a mix of both file types in the same workspace directory:
+```
+data/
+├── nwb_files/
+│   └── *.nwb
+└── abf_files/
+    └── *.abf
+```
 
 ### 3. Run the Pipeline
 ```bash
@@ -57,6 +99,29 @@ The script will:
 - Auto-detect protocol type (single vs mixed)
 - Process all `.nwb` files
 - Create output folders with analysis results
+
+The pipeline will:
+- Detect file type (NWB vs ABF)
+  
+For NWB:
+- Auto-detect protocol (single vs mixed)
+- Extract and structure data into bundles
+  
+For ABF:
+- Parse sweeps and standardize format
+
+Run full analysis:
+- Sweep classification
+- RMP calculation
+- Spike detection
+- Kink detection
+- Input resistance
+- Sag analysis
+
+Generate outputs:
+- .parquet / .csv results
+- plots and summary visualizations
+- per-bundle analysis folders
 
 ---
 
@@ -78,6 +143,31 @@ The script will:
 - Typically 200 kHz for stimulus, 50 kHz for response (mixed protocol)
 - Can vary; pipeline auto-detects from NWB metadata
 
+### ABF File Structure
+
+ABF files are typically less standardized but must contain:
+- Multiple sweeps of voltage recordings
+- Associated current injection traces (for current-clamp experiments)
+  
+Expected Properties
+- Consistent sampling rate across sweeps
+- Clearly defined stimulus periods (current injection)
+- Sufficient baseline (pre-stimulus) region
+  
+Notes:
+- ABF data is often noisier than NWB
+- The pipeline applies more flexible filtering and validation
+- No strict schema is required (unlike NWB)
+
+### General Requirements (All File Types)
+- Recordings should be current-clamp (not voltage-clamp)
+- Each sweep must contain:
+  - Baseline (no current injection)
+  - Stimulus (current injection)
+- Data must be long enough to:
+  - Detect spikes
+  - Compute baseline statistics (e.g., RMP)
+
 ---
 
 ## Pipeline Workflow
@@ -98,11 +188,7 @@ The script will:
 - `sweep_config.json` - Contains stimulus/baseline/response windows for each sweep
 - Classification plots showing kept vs dropped sweeps
 
-**Configuration** (see `analysis_config.py`):
-- `BASELINE_THRESHOLD_PA = 0.01` - Current below this = no injection
-- `STIMULUS_THRESHOLD_PA = 5.0` - Current above this = stimulus
-- `MIN_STIMULUS_DURATION_S = 0.300` - Minimum 300ms stimulus
-- `MIN_FLAT_RATIO = 0.70` - 70% of stimulus must be stable
+**Configuration** (see `analysis_config.py`)
 
 ---
 
@@ -121,6 +207,18 @@ The script will:
   - `response_all.parquet` - All response data
   - `stimulus_currentclamp.parquet` - Current (pA) only
   - `response_voltageclamp.parquet` - Voltage (mV) only
+ 
+**ABF Files** (`zuckerman-abf.py`):
+- Loads sweeps directly from .abf files
+- Extracts:
+  - Voltage traces (mV)
+  - Current injection traces (pA)
+- Standardizes structure to match NWB pipeline format
+- Outputs:
+  - `voltage_all.parquet`
+  - `current_all.parquet`
+  
+This standardization allows downstream analysis (spike detection, RMP, etc.) to run identically for both ABF and NWB data.
 
 **Memory optimization**: Uses save→delete→read-back pattern to avoid holding full dataset in RAM
 
@@ -142,11 +240,7 @@ The script will:
    - **Width** - Duration at half-max amplitude
    - **Latency** - Time from stimulus onset to first spike
 
-**Configuration** (see `analysis_config.py`):
-- `PEAK_HEIGHT_THRESHOLD = -10` mV
-- `PEAK_PROMINENCE = 20` mV
-- `THRESHOLD_PERCENT = 0.05` - 5% of max upstroke
-- `MIN_PEAK_THRESHOLD_AMPLITUDE_MV = 15.0` mV
+**Configuration** (see `analysis_config.py`)
 
 **Outputs**:
 - `AP_analysis.csv` - Per-spike features (peak, threshold, width, etc.)
@@ -174,9 +268,7 @@ The script will:
 - Identifies seal quality issues
 - Flags sweeps with excessive noise
 
-**Configuration** (see `analysis_config.py`):
-- `BASELINE_WINDOW_MS = 25` - Window size for downsampling
-- `REFERENCE_SMOOTH_MS = 200.05` - Smoothing window (scales with recording duration)
+**Configuration** (see `analysis_config.py`)
 
 **Outputs**:
 - RMP metrics appended to `analysis.csv`
@@ -207,7 +299,7 @@ The script will:
 
 ### Step 6: Summary Outputs
 
-**For each NWB file, creates**:
+**For each NWB/ABF file, creates**:
 - `analysis.csv` - Per-sweep summary (RMP, input resistance, spike count, etc.)
 - `AP_analysis.csv` - Per-spike features (all detected action potentials)
 - `manifest.json` - Metadata about the analysis run
@@ -225,49 +317,18 @@ The script will:
 ---
 
 ## Output Structure
-
 ```
-sub-{subject_id}_ses-{session_id}_icephys/
-├── analysis.csv                    # Per-sweep summary
-├── AP_analysis.csv                 # Per-spike features
-├── manifest.json                   # Analysis metadata
-├── sweep_config.json               # Window definitions
-├── all_plots_summary.pdf           # Combined visualizations
-├── min_frequency.csv               # Min current with spikes
-├── max_frequency.csv               # Max spike frequency row
-├── mean_frequency.csv              # Mean up to max frequency
-│
-├── voltage_all.parquet             # Raw voltage data (single protocol)
-├── current_all.parquet             # Raw current data (single protocol)
-│   OR
-├── stimulus_all.parquet            # All stimulus data (mixed protocol)
-├── response_all.parquet            # All response data (mixed protocol)
-├── stimulus_currentclamp.parquet   # pA only (mixed protocol)
-├── response_voltageclamp.parquet   # mV only (mixed protocol)
-│
-├── AP_Per_Sweep/                   # Individual spike plots
-│   ├── sweep_0_spikes.png
-│   ├── sweep_1_spikes.png
-│   └── ...
-│
-├── Averaged_Peaks_Per_Sweep/       # Averaged AP waveforms
-│   ├── sweep_0_avg_peak.png
-│   └── ...
-│
-├── Input_Resistance/               # Hyperpolarizing step responses
-│   ├── sweep_0_input_resistance.png
-│   └── ...
-│
-├── Sav_Gol_Plots_Per_Sweep/       # Filtered baseline traces
-│   ├── sweep_0_sav_gol.png
-│   └── ...
-│
-└── Grid plots:
-    ├── voltage_grid.png            # All voltage sweeps (single)
-    ├── current_grid.png            # All current sweeps (single)
-    OR
-    ├── stimulus_grid.png           # All stimulus sweeps (mixed)
-    └── response_grid.png           # All response sweeps (mixed)
+bundle_dir/
+├── analysis.parquet
+├── AP_analysis.csv
+├── sweep_config.json
+├── manifest.json
+├── plots/
+│   ├── AP_Per_Sweep/
+│   ├── Averaged_Peaks_Per_Sweep/
+│   ├── Sav_Gol_Plots_Per_Sweep/
+│   ├── Input_Resistance/
+│   └── grid_plots/
 ```
 
 ---
@@ -276,27 +337,7 @@ sub-{subject_id}_ses-{session_id}_icephys/
 
 ### Central Configuration File: `analysis_config.py`
 
-All analysis parameters are centralized for easy tuning:
-
-```python
-# Spike Detection
-PEAK_HEIGHT_THRESHOLD = -10          # mV
-PEAK_PROMINENCE = 20                 # mV
-THRESHOLD_PERCENT = 0.05             # 5% of max dV/dt
-MIN_PEAK_THRESHOLD_AMPLITUDE_MV = 15 # mV
-
-# Sweep Classification
-BASELINE_THRESHOLD_PA = 0.01         # No injection threshold
-STIMULUS_THRESHOLD_PA = 5.0          # Injection threshold
-MIN_STIMULUS_DURATION_S = 0.300      # 300ms minimum
-
-# Artifact Detection
-SECOND_DERIV_THRESHOLD = 10e9        # Sharp corner detection
-VOLTAGE_JUMP_THRESHOLD = 10.0        # Voltage discontinuity (mV)
-
-# Baseline Analysis
-BASELINE_WINDOW_MS = 25              # RMP derivative window
-```
+All analysis parameters are centralized for easy tuning
 
 **To modify thresholds**: Edit `analysis_config.py` - changes apply globally
 
@@ -372,12 +413,6 @@ The pipeline includes aggressive memory management for processing large datasets
 - `analysis_config.py` - Central parameter configuration
 - `requirements.txt` - Python package dependencies
 
-### Documentation
-- `README.md` - This file
-- `MEMORY_OPTIMIZATION.md` - Memory management strategies
-- `CSV_PARAMETERS_GUIDE.txt` - Description of output CSV columns
-- `Why_Sampling_Rate_Needed_SavGol.md` - Technical notes on filtering
-
 ---
 
 ## Citation & Data Sources
@@ -390,52 +425,3 @@ The pipeline includes aggressive memory management for processing large datasets
 ### Zuckerman Institute
 - Mixed protocol recordings (voltage AND current)
 - Custom experimental protocols
-
----
-
-## Support
-
-For questions or issues:
-1. Check `MEMORY_OPTIMIZATION.md` for memory-related problems
-2. Review `CSV_PARAMETERS_GUIDE.txt` for output column definitions
-3. Inspect `sweep_config.json` in output folders to understand sweep classification
-4. Check `manifest.json` for analysis metadata and error logs
-
----
-
-## Changelog
-
-### February 12, 2026 (v01-10) — Combined Plots
-- **New combined plot outputs**: Added `AP_Per_Sweep_combined.png` and `Averaged_Peaks_Per_Sweep_combined.png` which display all sweep plots in a single grid layout (max 4 columns)
-- **Files modified**: `spike_detection_new.py`
-
-### February 11, 2026 (v01-09) — Mixed Protocol Fix
-- **Fixed sweep_rates bug**: In `sav_gol_filter.py`, computed per-sweep sampling rates for mixed protocol data were not being stored in `sweep_rates`. This caused `downsample_sweep` to fail with "Mixed protocol detected but no sampling rate found for sweep X". Now stores `sweep_rates[sweep_id] = sweep_fs` after computing from data.
-- **Files modified**: `sav_gol_filter.py`
-
-### February 7, 2026 (v01-08) — Performance Optimization
-- **Skip-plots mode**: New `--skip-plots` CLI flag and menu option (option 3) to skip all plot generation for faster analysis. All numerical results remain identical.
-- **Non-interactive matplotlib backend**: All analysis scripts (`spike_detection_new.py`, `sav_gol_filter.py`, `input_resistance.py`) now use `matplotlib.use('Agg')` to avoid GUI overhead
-- **Reduced plot DPI**: Per-sweep SavGol and RMP histogram plots reduced from 300 to 150 DPI when plots are generated, cutting I/O time
-- **Eliminated redundant parquet reads**: Removed duplicate `pd.read_parquet()` call for pA data between spike detection and input resistance steps in `run_analysis.py`
-- **Files modified**: `spike_detection_new.py`, `sav_gol_filter.py`, `input_resistance.py`, `run_analysis.py`, `bundle_analyzer.py`, `main.py`
-
-### February 7, 2026 (v01-07)
-- **Improved plot quality**: Changed all image outputs from JPEG to PNG (lossless compression)
-- **Higher resolution**: Increased DPI from 100/150 to 300 for all plots and PDF export
-- **Better PDF rendering**: Added lanczos interpolation and auto-scaling for `all_plots_summary.pdf`
-- **New output**: Added `mean_frequency.csv` - contains mean values of all columns from first row up to max frequency row
-- **Sav-Gol filter fix**: Sweeps with no stimulus (0 pA) are now excluded from baseline filtering. These sweeps have no pre-stimulus baseline period, which caused erroneous filtering.
-- **Debug logging**: Added diagnostic output for Sav-Gol filter to help troubleshoot filtering issues across different machines
-
-### January 2026 (v01-06)
-- Initial release of unified NWB analysis pipeline
-- Support for single protocol (Allen Brain) and mixed protocol (Zuckerman) data
-- Comprehensive spike detection and AP morphology analysis
-- Savitzky-Golay baseline filtering
-- Input resistance calculation
-- Automatic sweep classification and artifact rejection
-
----
-
-**Last Updated**: February 12, 2026
