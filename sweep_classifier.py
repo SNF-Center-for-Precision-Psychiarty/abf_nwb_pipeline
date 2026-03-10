@@ -13,6 +13,11 @@ from pynwb import NWBHDF5IO
 import numpy as np
 import pandas as pd
 import warnings
+import re
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import math
+import pyabf
 import sys
 from pathlib import Path
 from matplotlib.backends.backend_pdf import PdfPages
@@ -834,11 +839,11 @@ def sweep_config_to_json(bundle_dir, df_stim, manifest, df_voltage=None):
     return sweep_config
 
 
-def process_bundle_abf(bundle_dir, plot_sweeps=True):
+def classify_bundle_sweeps_abf(bundle_dir, plot_sweeps=True):
     """
     Analyze an ABF bundle directory with consistent stimulus window across all sweeps.
     
-    Key differences from process_bundle():
+    Key differences from classify_bundle_sweeps_nwb():
     1. Finds ONE reference stimulus window from the sweep with clearest current injection
     2. Applies that SAME window to ALL sweeps
     3. Keeps ALL sweeps as valid (no rejection)
@@ -852,11 +857,6 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
     Returns:
         dict: sweep_config with consistent windows
     """
-    import json
-    from pathlib import Path
-    import matplotlib.pyplot as plt
-    import pyabf
-    
     p = Path(bundle_dir)
     
     print(f"\n{'='*70}")
@@ -949,9 +949,7 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
         print(f"  ✓ Baseline window: [{best_baseline_start:.4f}, {best_baseline_end:.4f}] s")
     
     # Extract stimulus values from ABF epoch information (protocol-defined stimulus levels per sweep)
-    print(f"\n--- Step 2a: Extracting stimulus levels from ABF epoch information ---")
-    
-    import re
+    print(f"\n--- Step 2b: Extracting stimulus levels from ABF epoch information ---")
     
     # Dictionary to cache stimulus values per sweep
     stim_values_by_sweep = {}
@@ -985,7 +983,7 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
         print(f"    Sweep {ex_sweep}: {stim_values_by_sweep[ex_sweep]:.1f} pA")
     
     # STEP 2: Validate each sweep and apply consistent window
-    print(f"\n--- Step 2b: Validating sweeps and applying consistent window ---")
+    print(f"\n--- Step 2: Validating sweeps and applying consistent window ---")
     
     sweep_config = {
         "sweeps": {},
@@ -1105,11 +1103,9 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
     
     # STEP 3: Plot all sweeps with pA traces
     if plot_sweeps:
-        print(f"\n--- Step 3: Generating sweep plots with current traces ---")
-        plot_dir = p / "Sweep_Overview"
-        plot_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\n--- Step 3: Generating sweeps overlay ---")
         
-        # Create overview plot with all sweeps
+        # Create overview plot with all sweeps (grid view, saved to bundle root)
         n_sweeps = len(all_sweeps)
         n_cols = min(4, n_sweeps)
         n_rows = (n_sweeps + n_cols - 1) // n_cols
@@ -1154,14 +1150,13 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
         plt.suptitle(f"All Sweeps Overview: {p.name}\nGreen=Stim Start, Red=Stim End", fontsize=11)
         plt.tight_layout()
         
-        overview_path = plot_dir / "all_sweeps_overview.png"
+        # Save grid view to bundle root (not in Sweep_Overview folder)
+        overview_path = p / "all_sweeps_overview.jpeg"
         plt.savefig(overview_path, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  ✓ Saved sweep overview: {overview_path.name}")
         
-        # Also save to bundle root for easy access
-        plt.figure(figsize=(4 * n_cols, 3 * n_rows * 2))
-        # Re-create simplified version for bundle root
+        # Also save overlay version for easy access
         fig2, axes2 = plt.subplots(2, 1, figsize=(12, 8))
         
         # Overlay all voltage traces
@@ -1184,7 +1179,7 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
         axes2[1].set_xlabel("Time (s)")
         
         plt.tight_layout()
-        overlay_path = p / "sweeps_overlay.png"
+        overlay_path = p / "sweeps_overlay.jpeg"
         plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  ✓ Saved sweeps overlay: {overlay_path.name}")
@@ -1196,7 +1191,7 @@ def process_bundle_abf(bundle_dir, plot_sweeps=True):
     return sweep_config
 
 
-def process_bundle(bundle_dir):
+def classify_bundle_sweeps_nwb(bundle_dir):
     """
     Analyze a bundle directory and create sweep_config.json
     
@@ -1211,9 +1206,6 @@ def process_bundle(bundle_dir):
     Returns:
         dict: sweep_config
     """
-    import json
-    from pathlib import Path
-    
     p = Path(bundle_dir)
     
     # Check if sweep_config already exists
@@ -1268,6 +1260,89 @@ def process_bundle(bundle_dir):
     if VERBOSE: print("\nClassifying sweeps and calculating analysis windows...")
     sweep_config = sweep_config_to_json(bundle_dir, df_analysis, manifest, df_voltage=df_voltage)
     
+    # Create sweeps_overlay.jpeg - overlay all sweeps with response on top, stimulus on bottom
+    print(f"\n--- Creating sweeps overlay ---")
+    try:
+        # Get stimulus times from first valid sweep (use for all sweeps like ABF does)
+        stim_start_s = None
+        stim_end_s = None
+        for sweep_id_str, sweep_data in sweep_config.get("sweeps", {}).items():
+            if sweep_data.get("valid", False):
+                windows = sweep_data.get("windows", {})
+                stim_start_s = windows.get("stimulus_start_s")
+                stim_end_s = windows.get("stimulus_end_s")
+                break
+        
+        # Load response data
+        df_mv = pd.read_parquet(mv_path)
+        
+        # For mixed protocol, also load stimulus table and filter by unit type
+        if is_mixed_protocol:
+            stim_path = p / manifest["tables"]["stimulus"]
+            df_stim_all = pd.read_parquet(stim_path)
+        else:
+            # For single protocol, stimulus is in df_analysis (current measurements)
+            df_stim_all = df_analysis
+        
+        # Get all sweeps
+        all_sweeps = sorted(df_analysis['sweep'].unique())
+        
+        # Create figure with 2 subplots (response on top, stimulus on bottom)
+        fig2, axes2 = plt.subplots(2, 1, figsize=(12, 8))
+        
+        # Top plot: Overlay all response traces
+        for sweep_id in all_sweeps:
+            # For mixed protocol, filter response by unit type (voltage)
+            if is_mixed_protocol:
+                df_sweep_resp = df_mv[df_mv['sweep'] == sweep_id]
+                df_sweep_resp = df_sweep_resp[df_sweep_resp['unit'].str.lower().str.contains('volt', na=False)]
+            else:
+                # For single protocol, response is voltage
+                df_sweep_resp = df_mv[df_mv['sweep'] == sweep_id]
+            
+            if len(df_sweep_resp) > 0:
+                axes2[0].plot(df_sweep_resp["t_s"], df_sweep_resp["value"], linewidth=0.5, alpha=0.7)
+        
+        if stim_start_s is not None:
+            axes2[0].axvline(stim_start_s, color='g', linestyle='--', linewidth=2, label='Stim Start')
+        if stim_end_s is not None:
+            axes2[0].axvline(stim_end_s, color='r', linestyle='--', linewidth=2, label='Stim End')
+        
+        response_ylabel = "Response" if is_mixed_protocol else "Voltage (mV)"
+        axes2[0].set_ylabel(response_ylabel)
+        axes2[0].set_title(f"All {len(all_sweeps)} Sweeps Overlaid")
+        axes2[0].legend(loc='upper right')
+        
+        # Bottom plot: Overlay all stimulus traces
+        for sweep_id in all_sweeps:
+            # For mixed protocol, filter stimulus by unit type (amperes/current)
+            if is_mixed_protocol:
+                df_sweep_stim = df_stim_all[df_stim_all['sweep'] == sweep_id]
+                df_sweep_stim = df_sweep_stim[df_sweep_stim['unit'].str.lower().str.contains('amp', na=False)]
+            else:
+                # For single protocol, stimulus is current
+                df_sweep_stim = df_stim_all[df_stim_all['sweep'] == sweep_id]
+            
+            if len(df_sweep_stim) > 0:
+                axes2[1].plot(df_sweep_stim["t_s"], df_sweep_stim["value"], linewidth=0.5, alpha=0.7)
+        
+        if stim_start_s is not None:
+            axes2[1].axvline(stim_start_s, color='g', linestyle='--', linewidth=2)
+        if stim_end_s is not None:
+            axes2[1].axvline(stim_end_s, color='r', linestyle='--', linewidth=2)
+        
+        stimulus_ylabel = "Stimulus" if is_mixed_protocol else "Current (pA)"
+        axes2[1].set_ylabel(stimulus_ylabel)
+        axes2[1].set_xlabel("Time (s)")
+        
+        plt.tight_layout()
+        overlay_path = p / "sweeps_overlay.jpeg"
+        plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved sweeps overlay: {overlay_path.name}")
+    except Exception as e:
+        print(f"  ⚠ Warning: Could not create sweeps overlay: {e}")
+    
     # Print summary
     print("\n" + "="*70)
     print("SWEEP ANALYSIS SUMMARY")
@@ -1312,7 +1387,6 @@ def process_bundle(bundle_dir):
         if VERBOSE: print(f"\n  (Detailed diagnostics available in sweep_config.json)")
     
     # Clean up matplotlib to prevent hanging
-    import matplotlib.pyplot as plt
     plt.close('all')
     
     return sweep_config
@@ -1326,8 +1400,6 @@ def combine_images_to_pdf(image_paths, pdf_path):
         image_paths: List of Path objects or strings pointing to image files
         pdf_path: Path object or string for output PDF file
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.image as mpimg
     
     # Filter to only existing files
     existing_paths = [p for p in image_paths if Path(p).exists()]
@@ -1374,7 +1446,6 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
     Returns:
         None (saves JPEG files and combined PDF)
     """
-    import matplotlib.pyplot as plt
     
     p = Path(bundle_dir)
     manifest_path = p / "manifest.json"
@@ -1383,15 +1454,14 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
     plot_paths = []
     
     # Add grid plots created during data preparation (if they exist)
-    voltage_grid = p / "voltage_grid.png"
-    current_grid = p / "current_grid.png"
+    voltage_grid = p / "voltage_grid.jpeg"
+    current_grid = p / "current_grid.jpeg"
     if voltage_grid.exists():
         plot_paths.append(voltage_grid)
     if current_grid.exists():
         plot_paths.append(current_grid)
     
     # Load manifest and parquets
-    import json
     with open(manifest_path) as f:
         manifest = json.load(f)
     
@@ -1608,8 +1678,8 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
         # For single protocol, add stimulus window vertical lines using first kept sweep
         add_stimulus_vertical_lines(ax_kept_mv, sweep_id=kept_sweeps[0], sweep_start_time=first_sweep_start_time)
     
-    kept_mv_path = p / "kept_sweeps_voltage.png"
-    fig_kept_mv.savefig(kept_mv_path, dpi=300, format='png')
+    kept_mv_path = p / "kept_sweeps_voltage.jpeg"
+    fig_kept_mv.savefig(kept_mv_path, dpi=150, format='jpeg')
     plt.close(fig_kept_mv)
     print(f"  ✓ Saved: {kept_mv_path}")
     plot_paths.append(kept_mv_path)
@@ -1648,8 +1718,8 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
         # For single protocol, add stimulus window vertical lines using first kept sweep
         add_stimulus_vertical_lines(ax_kept_pa, sweep_id=kept_sweeps[0], sweep_start_time=first_sweep_start_time_pa)
     
-    kept_pa_path = p / "kept_sweeps_current.png"
-    fig_kept_pa.savefig(kept_pa_path, dpi=300, format='png')
+    kept_pa_path = p / "kept_sweeps_current.jpeg"
+    fig_kept_pa.savefig(kept_pa_path, dpi=150, format='jpeg')
     plt.close(fig_kept_pa)
     print(f"  ✓ Saved: {kept_pa_path}")
     plot_paths.append(kept_pa_path)
@@ -1684,8 +1754,8 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
             ax_dropped_mv.legend(fontsize=7, loc='best', ncol=2)
         plt.tight_layout()
         
-        dropped_mv_path = p / "dropped_sweeps_voltage.png"
-        fig_dropped_mv.savefig(dropped_mv_path, dpi=300, format='png')
+        dropped_mv_path = p / "dropped_sweeps_voltage.jpeg"
+        fig_dropped_mv.savefig(dropped_mv_path, dpi=150, format='jpeg')
         plt.close(fig_dropped_mv)
         print(f"  ✓ Saved: {dropped_mv_path}")
         plot_paths.append(dropped_mv_path)
@@ -1717,8 +1787,8 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
             ax_dropped_pa.legend(fontsize=7, loc='best', ncol=2)
         plt.tight_layout()
         
-        dropped_pa_path = p / "dropped_sweeps_current.png"
-        fig_dropped_pa.savefig(dropped_pa_path, dpi=300, format='png')
+        dropped_pa_path = p / "dropped_sweeps_current.jpeg"
+        fig_dropped_pa.savefig(dropped_pa_path, dpi=150, format='jpeg')
         plt.close(fig_dropped_pa)
         print(f"  ✓ Saved: {dropped_pa_path}")
         plot_paths.append(dropped_pa_path)
@@ -1730,7 +1800,6 @@ def visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps):
     combine_images_to_pdf(plot_paths, pdf_path)
     
     # Clean up matplotlib to prevent hanging
-    import matplotlib.pyplot as plt
     plt.close('all')
 
 
@@ -1744,9 +1813,6 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
     
     Markers show stimulus start (*) and end (*) points for kept sweeps.
     """
-    import matplotlib.pyplot as plt
-    import math
-    
     p = Path(bundle_dir)
     manifest_path = p / "manifest.json"
     
@@ -1754,14 +1820,13 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
     plot_paths = []
     
     # Add grid plots created during data preparation (if they exist)
-    stimulus_grid = p / "stimulus_grid.png"
-    response_grid = p / "response_grid.png"
+    stimulus_grid = p / "stimulus_grid.jpeg"
+    response_grid = p / "response_grid.jpeg"
     if stimulus_grid.exists():
         plot_paths.append(stimulus_grid)
     if response_grid.exists():
         plot_paths.append(response_grid)
-    
-    import json
+
     with open(manifest_path) as f:
         manifest = json.load(f)
     
@@ -1841,8 +1906,8 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
         fig.suptitle(f"KEPT Sweeps - Current Stimulus ({len(kept_sweeps)} sweeps) [* = stim start/end]", 
                      fontsize=14, fontweight='bold', y=0.995)
         plt.tight_layout()
-        kept_stim_path = p / "kept_sweeps_stimulus.png"
-        fig.savefig(kept_stim_path, dpi=300, format='png', bbox_inches='tight')
+        kept_stim_path = p / "kept_sweeps_stimulus.jpeg"
+        fig.savefig(kept_stim_path, dpi=150, format='jpeg', bbox_inches='tight')
         plt.close(fig)
         print(f"  ✓ Saved: {kept_stim_path}")
         plot_paths.append(kept_stim_path)
@@ -1910,8 +1975,8 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
         fig.suptitle(f"KEPT Sweeps - Voltage Response ({len(kept_sweeps)} sweeps) [* = stim start/end]", 
                      fontsize=14, fontweight='bold', y=0.995)
         plt.tight_layout()
-        kept_resp_path = p / "kept_sweeps_response.png"
-        fig.savefig(kept_resp_path, dpi=300, format='png', bbox_inches='tight')
+        kept_resp_path = p / "kept_sweeps_response.jpeg"
+        fig.savefig(kept_resp_path, dpi=150, format='jpeg', bbox_inches='tight')
         plt.close(fig)
         print(f"  ✓ Saved: {kept_resp_path}")
         plot_paths.append(kept_resp_path)
@@ -1960,8 +2025,8 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
         fig.suptitle(f"DROPPED Sweeps - Stimulus ({len(dropped_sweeps)} sweeps)", 
                      fontsize=14, fontweight='bold', y=0.995, color='red')
         plt.tight_layout()
-        dropped_stim_path = p / "dropped_sweeps_stimulus.png"
-        fig.savefig(dropped_stim_path, dpi=300, format='png', bbox_inches='tight')
+        dropped_stim_path = p / "dropped_sweeps_stimulus.jpeg"
+        fig.savefig(dropped_stim_path, dpi=150, format='jpeg', bbox_inches='tight')
         plt.close(fig)
         print(f"  ✓ Saved: {dropped_stim_path}")
         plot_paths.append(dropped_stim_path)
@@ -1973,7 +2038,6 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
     combine_images_to_pdf(plot_paths, pdf_path)
     
     # Clean up matplotlib to prevent hanging
-    import matplotlib.pyplot as plt
     plt.close('all')
 
 

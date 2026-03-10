@@ -216,9 +216,9 @@ def extract_from_mixed_protocol_nwb(nwb_path, out_dir, cellNum, plot=False):
             
             fig.suptitle(f'Stimulus Traces - {cellNum}', fontsize=16, fontweight='bold', y=0.995)
             plt.tight_layout()
-            plt.savefig(os.path.join(out_dir, "stimulus_grid.png"), dpi=300)
+            plt.savefig(os.path.join(out_dir, "stimulus_grid.jpeg"), dpi=300)
             plt.close()
-            print(f"✔ Saved stimulus grid plot → stimulus_grid.png")
+            print(f"✔ Saved stimulus grid plot → stimulus_grid.jpeg")
         
         if plot and resp_plot_data:
             n_sweeps = len(resp_plot_data)
@@ -242,9 +242,9 @@ def extract_from_mixed_protocol_nwb(nwb_path, out_dir, cellNum, plot=False):
             
             fig.suptitle(f'Response Traces - {cellNum}', fontsize=16, fontweight='bold', y=0.995)
             plt.tight_layout()
-            plt.savefig(os.path.join(out_dir, "response_grid.png"), dpi=300)
+            plt.savefig(os.path.join(out_dir, "response_grid.jpeg"), dpi=300)
             plt.close()
-            print(f"✔ Saved response grid plot → response_grid.png")
+            print(f"✔ Saved response grid plot → response_grid.jpeg")
         
         # Save ALL stimulus data (mixed units)
         if stim_rows:

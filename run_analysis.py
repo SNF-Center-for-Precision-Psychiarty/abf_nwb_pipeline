@@ -10,6 +10,9 @@ from sav_gol_filter import run_sav_gol
 from input_resistance import get_input_resistance
 from lowpass_filter import apply_lowpass_filter_to_bundle
 from sag_current import calculate_sag_for_bundle
+from matplotlib.backends.backend_pdf import PdfPages
+import sys
+import subprocess
 
 # Set to True to enable verbose/debug output in terminal
 VERBOSE = False
@@ -29,9 +32,6 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
         return
     
     try:
-        import subprocess
-        from pathlib import Path
-        
         bundle_path = Path(bundle_dir)
         
         # Get list of parquet files
@@ -53,7 +53,7 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
         else:
             sweeps_to_plot = min(max_sweeps, n_sweeps)
         
-        print(f"  Generating before/after filter visualizations...")
+        print(f"\n[Step 1.6] Generating before/after filter visualizations...")
         print(f"  Creating plots for {sweeps_to_plot} sweeps (of {n_sweeps} total)...")
         
         # Get current working directory to find plot script
@@ -87,7 +87,7 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
         # Print summary
         viz_dir = bundle_path / "filter_visualizations"
         if viz_dir.exists():
-            n_plots = len(list(viz_dir.glob("*.png")))
+            n_plots = len(list(viz_dir.glob("*.jpeg")))
             print(f"  ✓ {n_plots} visualization files created")
             print(f"    Location: {viz_dir}")
         
@@ -365,7 +365,6 @@ def replace_current_data_with_reference(bundle_dir: str, reference_bundle_dir: s
 
     # Apply baseline offset correction + per-sweep averaging + rounding to 5 pA increments
     try:
-        import numpy as _np
         # Step 1: Calculate baseline offset during quiet period (pre-stimulus period, no injection)
         # Use sweep_config if available, otherwise use first 10% of recording
         if sweep_config:
@@ -456,22 +455,23 @@ def replace_current_data_with_reference(bundle_dir: str, reference_bundle_dir: s
     print(f"  Sweep remapping applied for {n_map} sweeps")
 
 
-from sweep_classifier import process_bundle as classify_bundle_sweeps
-from sweep_classifier import process_bundle_abf as classify_bundle_sweeps_abf
+from sweep_classifier import classify_bundle_sweeps_nwb
+from sweep_classifier import classify_bundle_sweeps_abf
 
 
 def generate_summary_plot(bundle_dir: str):
     """
-    Collect all JPEG/PNG plot files from a bundle directory and combine them
+    Collect all JPEG plot files from a bundle directory and combine them
     into a single master summary image.
     
-    Gathers plots from:
+    Gathers plots from (in order):
+    - Sweep classification (sweeps_overlay.jpeg, all_sweeps_overview.jpeg)
     - AP_Per_Sweep/ (action potential per sweep)
     - Averaged_Peaks_Per_Sweep/ (averaged peaks)
     - SavGol_Plots/ (Savitzky-Golay filter)
-    - InputResistance.jpeg
-    - RMP_Dist_Post_Filter.png
-    - Any combined plots already generated
+    - InputResistance/ (input resistance analysis)
+    - RMP distribution
+    - Kink diagnostics
     """
     try:
         from PIL import Image
@@ -486,42 +486,43 @@ def generate_summary_plot(bundle_dir: str):
     image_paths = []
     labels = []
     
-    # 1. Combined AP plot (if exists) or individual AP plots
-    combined_ap = p / "AP_Per_Sweep_combined.png"
-    if combined_ap.exists():
-        image_paths.append(combined_ap)
-        labels.append("Action Potentials (All Sweeps)")
-    else:
-        ap_dir = p / "AP_Per_Sweep"
-        if ap_dir.exists():
-            for f in sorted(ap_dir.glob("AP_sweep_*.jpeg")):
-                image_paths.append(f)
-                sweep_num = f.stem.replace("AP_sweep_", "")
-                labels.append(f"AP Sweep {sweep_num}")
+    # 0. Sweep classification plots (created first during classification)
+    sweeps_overlay = p / "sweeps_overlay.jpeg"
+    if sweeps_overlay.exists():
+        image_paths.append(sweeps_overlay)
+        labels.append("Sweeps Overlay (All Sweeps)")
     
-    # 2. Combined Averaged Peaks plot (if exists) or individual ones
-    combined_avg = p / "Averaged_Peaks_Per_Sweep_combined.png"
-    if combined_avg.exists():
-        image_paths.append(combined_avg)
-        labels.append("Averaged Peaks (All Sweeps)")
-    else:
-        avg_dir = p / "Averaged_Peaks_Per_Sweep"
-        if avg_dir.exists():
-            for f in sorted(avg_dir.glob("averaged_peaks_for_sweep_*.jpeg")):
-                image_paths.append(f)
-                sweep_num = f.stem.replace("averaged_peaks_for_sweep_", "")
-                labels.append(f"Avg Peaks Sweep {sweep_num}")
+    all_sweeps_overview = p / "all_sweeps_overview.jpeg"
+    if all_sweeps_overview.exists():
+        image_paths.append(all_sweeps_overview)
+        labels.append("All Sweeps Overview (Grid)")
+    
+    # 1. Individual AP plots
+    ap_dir = p / "AP_Per_Sweep"
+    if ap_dir.exists():
+        for f in sorted(ap_dir.glob("AP_sweep_*.jpeg")):
+            image_paths.append(f)
+            sweep_num = f.stem.replace("AP_sweep_", "")
+            labels.append(f"AP Sweep {sweep_num}")
+    
+    # 2. Individual Averaged Peaks plots
+    avg_dir = p / "Averaged_Peaks_Per_Sweep"
+    if avg_dir.exists():
+        for f in sorted(avg_dir.glob("averaged_peaks_for_sweep_*.jpeg")):
+            image_paths.append(f)
+            sweep_num = f.stem.replace("averaged_peaks_for_sweep_", "")
+            labels.append(f"Avg Peaks Sweep {sweep_num}")
     
     # 3. SavGol filter plots
-    savgol_dir = p / "SavGol_Plots"
+    savgol_dir = p / "Sav_Gol_Plots_Per_Sweep"
     if savgol_dir.exists():
-        for f in sorted(savgol_dir.glob("SavGol_Sweep*.png")):
+        for f in sorted(savgol_dir.glob("SavGol_Sweep*.jpeg")):
             image_paths.append(f)
             sweep_id = f.stem.replace("SavGol_Sweep", "").replace("_baseline", "")
             labels.append(f"SavGol Sweep {sweep_id}")
     
     # 4. RMP distribution post-filter
-    rmp_plot = p / "RMP_Dist_Post_Filter.png"
+    rmp_plot = p / "RMP_Dist_Post_Filter.jpeg"
     if rmp_plot.exists():
         image_paths.append(rmp_plot)
         labels.append("RMP Distribution")
@@ -542,55 +543,362 @@ def generate_summary_plot(bundle_dir: str):
         image_paths.append(ir_plot)
         labels.append("Input Resistance")
     
+    # 6. Kept sweeps current
+    kept_pa = p / "kept_sweeps_current.jpeg"
+    if kept_pa.exists():
+        image_paths.append(kept_pa)
+        labels.append("Kept Sweeps - Current")
+    
+    # 7. Kept sweeps voltage
+    kept_mv = p / "kept_sweeps_voltage.jpeg"
+    if kept_mv.exists():
+        image_paths.append(kept_mv)
+        labels.append("Kept Sweeps - Voltage")
+    
+    # 8. Dropped sweeps current
+    dropped_pa = p / "dropped_sweeps_current.jpeg"
+    if dropped_pa.exists():
+        image_paths.append(dropped_pa)
+        labels.append("Dropped Sweeps - Current")
+    
+    # 9. Current grid (if exists)
+    current_grid = p / "current_grid.jpeg"
+    if current_grid.exists():
+        image_paths.append(current_grid)
+        labels.append("Current Grid (All Sweeps)")
+    
+    # 10. Voltage grid (if exists)
+    voltage_grid = p / "voltage_grid.jpeg"
+    if voltage_grid.exists():
+        image_paths.append(voltage_grid)
+        labels.append("Voltage Grid (All Sweeps)")
+    
+    # 11. Kink diagnostics
+    kink_dir = p / "Kink_Diagnostics"
+    if kink_dir.exists():
+        for f in sorted(kink_dir.glob("*.jpeg")):
+            image_paths.append(f)
+            sweep_id = f.stem.replace("sweep_", "").replace("_kinks", "")
+            labels.append(f"Kink Analysis Sweep {sweep_id}")
+    
     if not image_paths:
         print("  No plot files found to combine.")
         return
     
-    print(f"  Combining {len(image_paths)} plots into summary...")
+    print(f"  Compiling all {len(image_paths)} plots...")
     
-    # Load all images
-    images = []
-    for img_path in image_paths:
-        try:
-            img = Image.open(img_path)
-            images.append(img)
-        except Exception as e:
-            print(f"  WARNING: Could not open {img_path.name}: {e}")
+    pdf_path = p / "all_plots_summary.pdf"
     
-    if not images:
-        return
+    with PdfPages(pdf_path) as pdf:
+        # PAGE 1: sweeps_overlay
+        sweeps_overlay = p / "sweeps_overlay.jpeg"
+        if sweeps_overlay.exists():
+            fig = plt.figure(figsize=(11, 8.5))
+            ax = fig.add_subplot(111)
+            img = Image.open(sweeps_overlay)
+            ax.imshow(img)
+            ax.axis('off')
+            ax.set_title("Sweeps Overlay", fontsize=14, fontweight='bold', pad=10)
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            img.close()
+        
+        # PAGE 2: current_grid, voltage_grid (or stimulus_grid, response_grid for mixed protocol, or all_sweeps_overview)
+        fig = plt.figure(figsize=(11, 11))
+        current_grid = p / "current_grid.jpeg"
+        voltage_grid = p / "voltage_grid.jpeg"
+        stimulus_grid = p / "stimulus_grid.jpeg"
+        response_grid = p / "response_grid.jpeg"
+        all_sweeps_overview = p / "all_sweeps_overview.jpeg"
+        
+        if current_grid.exists() and voltage_grid.exists():
+            ax1 = fig.add_subplot(2, 1, 1)
+            img1 = Image.open(current_grid)
+            ax1.imshow(img1)
+            ax1.axis('off')
+            ax1.set_title("Current Grid", fontsize=12, fontweight='bold')
+            
+            ax2 = fig.add_subplot(2, 1, 2)
+            img2 = Image.open(voltage_grid)
+            ax2.imshow(img2)
+            ax2.axis('off')
+            ax2.set_title("Voltage Grid", fontsize=12, fontweight='bold')
+            img1.close()
+            img2.close()
+        elif stimulus_grid.exists() and response_grid.exists():
+            ax1 = fig.add_subplot(2, 1, 1)
+            img1 = Image.open(stimulus_grid)
+            ax1.imshow(img1)
+            ax1.axis('off')
+            ax1.set_title("Stimulus Grid", fontsize=12, fontweight='bold')
+            
+            ax2 = fig.add_subplot(2, 1, 2)
+            img2 = Image.open(response_grid)
+            ax2.imshow(img2)
+            ax2.axis('off')
+            ax2.set_title("Response Grid", fontsize=12, fontweight='bold')
+            img1.close()
+            img2.close()
+        elif all_sweeps_overview.exists():
+            ax = fig.add_subplot(111)
+            img = Image.open(all_sweeps_overview)
+            ax.imshow(img)
+            ax.axis('off')
+            ax.set_title("All Sweeps Overview", fontsize=12, fontweight='bold')
+            img.close()
+        
+        if current_grid.exists() or voltage_grid.exists() or stimulus_grid.exists() or response_grid.exists() or all_sweeps_overview.exists():
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+        # PAGE 3: kept_sweeps_current and kept_sweeps_voltage (or kept_sweeps_stimulus and kept_sweeps_response for mixed protocol)
+        kept_pa = p / "kept_sweeps_current.jpeg"
+        kept_mv = p / "kept_sweeps_voltage.jpeg"
+        kept_stim = p / "kept_sweeps_stimulus.jpeg"
+        kept_resp = p / "kept_sweeps_response.jpeg"
+        
+        if kept_pa.exists() or kept_mv.exists() or kept_stim.exists() or kept_resp.exists():
+            fig = plt.figure(figsize=(11, 11))
+            
+            # Single protocol (current/voltage)
+            if kept_pa.exists():
+                ax1 = fig.add_subplot(2, 1, 1)
+                img1 = Image.open(kept_pa)
+                ax1.imshow(img1)
+                ax1.axis('off')
+                ax1.set_title("Kept Sweeps - Current", fontsize=12, fontweight='bold')
+                img1.close()
+            
+            if kept_mv.exists():
+                ax2 = fig.add_subplot(2, 1, 2)
+                img2 = Image.open(kept_mv)
+                ax2.imshow(img2)
+                ax2.axis('off')
+                ax2.set_title("Kept Sweeps - Voltage", fontsize=12, fontweight='bold')
+                img2.close()
+            
+            # Mixed protocol (stimulus/response)
+            if kept_stim.exists():
+                ax1 = fig.add_subplot(2, 1, 1)
+                img1 = Image.open(kept_stim)
+                ax1.imshow(img1)
+                ax1.axis('off')
+                ax1.set_title("Kept Sweeps - Stimulus", fontsize=12, fontweight='bold')
+                img1.close()
+            
+            if kept_resp.exists():
+                ax2 = fig.add_subplot(2, 1, 2)
+                img2 = Image.open(kept_resp)
+                ax2.imshow(img2)
+                ax2.axis('off')
+                ax2.set_title("Kept Sweeps - Response", fontsize=12, fontweight='bold')
+                img2.close()
+            
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+        
+        # PAGE 4: dropped_sweeps_current (or dropped_sweeps_stimulus for mixed protocol)
+        dropped_pa = p / "dropped_sweeps_current.jpeg"
+        dropped_stim = p / "dropped_sweeps_stimulus.jpeg"
+        
+        if dropped_pa.exists() or dropped_stim.exists():
+            fig = plt.figure(figsize=(11, 8.5))
+            ax = fig.add_subplot(111)
+            
+            # Single protocol (current)
+            if dropped_pa.exists():
+                img = Image.open(dropped_pa)
+                ax.imshow(img)
+                ax.axis('off')
+                ax.set_title("Dropped Sweeps - Current", fontsize=12, fontweight='bold')
+                img.close()
+            
+            # Mixed protocol (stimulus)
+            elif dropped_stim.exists():
+                img = Image.open(dropped_stim)
+                ax.imshow(img)
+                ax.axis('off')
+                ax.set_title("Dropped Sweeps - Stimulus", fontsize=12, fontweight='bold')
+                img.close()
+            
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+        
+        # PAGE 5: AP_Per_Sweep in grid format
+        ap_dir = p / "AP_Per_Sweep"
+        if ap_dir.exists():
+            ap_files = sorted(ap_dir.glob("AP_sweep_*.jpeg"))
+            if ap_files:
+                n_plots = len(ap_files)
+                n_cols = 4
+                n_rows = (n_plots + n_cols - 1) // n_cols
+                
+                fig = plt.figure(figsize=(14, 3.5 * n_rows))
+                for idx, ap_file in enumerate(ap_files):
+                    ax = fig.add_subplot(n_rows, n_cols, idx + 1)
+                    img = Image.open(ap_file)
+                    ax.imshow(img)
+                    ax.axis('off')
+                    sweep_num = ap_file.stem.replace("AP_sweep_", "")
+                    ax.set_title(f"AP Sweep {sweep_num}", fontsize=10, fontweight='bold')
+                    img.close()
+                
+                plt.tight_layout()
+                pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+        
+        # PAGE 6: Averaged_Peaks_Per_Sweep in grid format
+        avg_dir = p / "Averaged_Peaks_Per_Sweep"
+        if avg_dir.exists():
+            avg_files = sorted(avg_dir.glob("averaged_peaks_for_sweep_*.jpeg"))
+            if avg_files:
+                n_plots = len(avg_files)
+                n_cols = 4
+                n_rows = (n_plots + n_cols - 1) // n_cols
+                
+                fig = plt.figure(figsize=(14, 3.5 * n_rows))
+                for idx, avg_file in enumerate(avg_files):
+                    ax = fig.add_subplot(n_rows, n_cols, idx + 1)
+                    img = Image.open(avg_file)
+                    ax.imshow(img)
+                    ax.axis('off')
+                    sweep_num = avg_file.stem.replace("averaged_peaks_for_sweep_", "")
+                    ax.set_title(f"Avg Peak Sweep {sweep_num}", fontsize=10, fontweight='bold')
+                    img.close()
+                
+                plt.tight_layout()
+                pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+        
+        # PAGE 7: Kink Diagnostics in grid format
+        kink_dir = p / "Kink_Diagnostics"
+        if kink_dir.exists():
+            kink_files = sorted(kink_dir.glob("*.jpeg"))
+            if kink_files:
+                n_plots = len(kink_files)
+                n_cols = 4
+                n_rows = (n_plots + n_cols - 1) // n_cols
+                
+                fig = plt.figure(figsize=(14, 3.5 * n_rows))
+                for idx, kink_file in enumerate(kink_files):
+                    ax = fig.add_subplot(n_rows, n_cols, idx + 1)
+                    img = Image.open(kink_file)
+                    ax.imshow(img)
+                    ax.axis('off')
+                    sweep_id = kink_file.stem.replace("sweep_", "").replace("_kinks", "")
+                    ax.set_title(f"{sweep_id}", fontsize=10, fontweight='bold')
+                    img.close()
+                
+                plt.tight_layout()
+                pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+        
+        # PAGE 8: Sav_Gol_Plots_Per_Sweep in grid format and RMP plot
+        savgol_dir = p / "Sav_Gol_Plots_Per_Sweep"
+        rmp_plot = p / "RMP_Dist_Post_Filter.jpeg"
+        
+        if savgol_dir.exists() or rmp_plot.exists():
+            savgol_files = sorted(savgol_dir.glob("SavGol_Sweep*.jpeg")) if savgol_dir.exists() else []
+            n_savgol = len(savgol_files)
+            has_rmp = rmp_plot.exists()
+            
+            # Calculate grid: 4 columns for SavGol plots, plus RMP if exists
+            n_cols = 4
+            n_savgol_rows = (n_savgol + n_cols - 1) // n_cols
+            n_total_rows = n_savgol_rows + (1 if has_rmp else 0)
+            
+            fig = plt.figure(figsize=(14, 3.5 * n_total_rows))
+            
+            # Add SavGol plots
+            for idx, savgol_file in enumerate(savgol_files):
+                ax = fig.add_subplot(n_total_rows, n_cols, idx + 1)
+                img = Image.open(savgol_file)
+                ax.imshow(img)
+                ax.axis('off')
+                sweep_id = savgol_file.stem.replace("SavGol_Sweep", "").replace("_baseline", "")
+                ax.set_title(f"SavGol Sweep {sweep_id}", fontsize=10, fontweight='bold')
+                img.close()
+            
+            # Add RMP plot if exists
+            if has_rmp:
+                ax = fig.add_subplot(n_total_rows, n_cols, n_savgol + 1)
+                img = Image.open(rmp_plot)
+                ax.imshow(img)
+                ax.axis('off')
+                ax.set_title("RMP Distribution", fontsize=10, fontweight='bold')
+                img.close()
+            
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+        
+        # PAGE 9: Sag Current
+        sag_plot = p / "SagCurrent.jpeg"
+        if sag_plot.exists():
+            fig = plt.figure(figsize=(11, 8.5))
+            ax = fig.add_subplot(111)
+            img = Image.open(sag_plot)
+            ax.imshow(img)
+            ax.axis('off')
+            ax.set_title("Sag Current Analysis", fontsize=14, fontweight='bold', pad=10)
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            img.close()
+        
+        # PAGE 10: Filter Visualizations (before/after filtering plots)
+        filter_vis_dir = p / "filter_visualizations"
+        if filter_vis_dir.exists():
+            filter_files = sorted(filter_vis_dir.glob("*.jpeg"))
+            if filter_files:
+                n_plots = len(filter_files)
+                n_cols = 2  # 2 columns for filter visualizations (typically larger plots)
+                n_rows = (n_plots + n_cols - 1) // n_cols
+                
+                fig = plt.figure(figsize=(14, 7 * n_rows))
+                for idx, filter_file in enumerate(filter_files):
+                    ax = fig.add_subplot(n_rows, n_cols, idx + 1)
+                    img = Image.open(filter_file)
+                    ax.imshow(img)
+                    ax.axis('off')
+                    # Extract a readable title from filename
+                    title = filter_file.stem.replace('_before_after_', ' - ').replace('_', ' ').replace('spectrum', 'Spectrum').replace('Sweep', 'Sweep')
+                    ax.set_title(title, fontsize=10, fontweight='bold')
+                    img.close()
+                
+                plt.tight_layout()
+                pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+        
+        # PAGE 11: Input Resistance
+        ir_dir = p / "Input_Resistance"
+        ir_plot = None
+        if ir_dir.exists():
+            ir_candidates = list(ir_dir.glob("InputResistance.jpeg"))
+            if ir_candidates:
+                ir_plot = ir_candidates[0]
+        if ir_plot is None:
+            ir_root = p / "InputResistance.jpeg"
+            if ir_root.exists():
+                ir_plot = ir_root
+        
+        if ir_plot:
+            fig = plt.figure(figsize=(11, 8.5))
+            ax = fig.add_subplot(111)
+            img = Image.open(ir_plot)
+            ax.imshow(img)
+            ax.axis('off')
+            ax.set_title("Input Resistance", fontsize=14, fontweight='bold', pad=10)
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            img.close()
     
-    # Create grid layout
-    n_plots = len(images)
-    n_cols = min(3, n_plots)
-    n_rows = (n_plots + n_cols - 1) // n_cols
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7 * n_cols, 5 * n_rows))
-    if n_plots == 1:
-        axes = np.array([axes])
-    axes = np.atleast_2d(axes).flatten()
-    
-    for idx, (img, label) in enumerate(zip(images, labels)):
-        axes[idx].imshow(img)
-        axes[idx].axis('off')
-        axes[idx].set_title(label, fontsize=11, fontweight='bold')
-    
-    # Hide unused subplots
-    for idx in range(n_plots, len(axes)):
-        axes[idx].axis('off')
-    
-    fig.suptitle(f"Analysis Summary: {p.name}", fontsize=14, fontweight='bold', y=1.01)
-    plt.tight_layout()
-    
-    summary_path = p / "analysis_summary.png"
-    plt.savefig(summary_path, dpi=150, bbox_inches='tight', facecolor='white')
-    plt.close()
-    
-    # Close PIL images
-    for img in images:
-        img.close()
-    
-    print(f"  [OK] Saved master summary plot: {summary_path.name}")
+    print(f"  ✓ Saved all plots summary: {pdf_path.name}")
 
 
 def load_sweep_config(bundle_dir: str):
@@ -637,7 +945,7 @@ def load_sweep_config(bundle_dir: str):
             if is_abf_bundle:
                 sweep_config = classify_bundle_sweeps_abf(bundle_dir, plot_sweeps=True)
             else:
-                sweep_config = classify_bundle_sweeps(bundle_dir)
+                sweep_config = classify_bundle_sweeps_nwb(bundle_dir)
             
             if config_path.exists():
                 with open(config_path) as f:
@@ -663,9 +971,9 @@ def load_sweep_config(bundle_dir: str):
         if is_abf_bundle:
             sweep_config = classify_bundle_sweeps_abf(bundle_dir, plot_sweeps=True)
         else:
-            sweep_config = classify_bundle_sweeps(bundle_dir)
+            sweep_config = classify_bundle_sweeps_nwb(bundle_dir)
         
-        # Reload from the file that process_bundle wrote
+        # Reload from the file that classify_bundle_sweeps_nwb wrote
         if config_path.exists():
             with open(config_path) as f:
                 return json.load(f)
@@ -784,7 +1092,6 @@ def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots
     
     # Auto-skip the pause prompt for automated pipeline (no interactive input)
     # Check if we're running in non-interactive mode
-    import sys
     is_interactive = sys.stdin.isatty()
     
     if is_interactive:
@@ -844,7 +1151,8 @@ def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots
     man["analysis"]["resting_vm_table"] = out_parq.name
     man["analysis"]["resting_vm_mean"]  = combined_mean
     (p / "manifest.json").write_text(json.dumps(man, indent=2))
-    
+
+    print(f"\n✓ Resting Vm mean: {combined_mean:.2f} mV")
     print(f"  Saved to: {out_parq.name}")
     
     # Skip interactive pause in non-interactive mode
@@ -958,8 +1266,8 @@ def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots
                 else:
                     print("(Type 'resume' to continue)")
 
-    # STEP 6: Sag current analysis (HCN channel characterization)
-    print(f"\n[Step 6] Sag current analysis (HCN channels)...")
+    # STEP 7: Sag current analysis (HCN channel characterization)
+    print(f"\n[Step 7] Sag current analysis (HCN channels)...")
     print(f"  📊 Computing sag current from hyperpolarizing sweeps...")
     
     sag_results = calculate_sag_for_bundle(bundle_dir, verbose=True)
@@ -1030,7 +1338,7 @@ def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots
 
     # Generate master summary plot combining all figures
     if not skip_plots:
-        print("🖼️  Generating summary plots...")
+        print("🖼️  Generating summary PDF...")
         generate_summary_plot(bundle_dir)
     
     # FINAL CHECKPOINT: Pipeline complete
@@ -1043,6 +1351,6 @@ def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots
     print(f"  - analysis.parquet: Complete results table")
     print(f"  - analysis.csv: Exported results (CSV format)")
     print(f"  - sweep_config.json: Sweep metadata and timing windows")
-    print(f"  - Individual PNG/PDF plots: In {bundle_dir}")
+    print(f"  - Individual JPEG/PDF plots: In {bundle_dir}")
     print()
 

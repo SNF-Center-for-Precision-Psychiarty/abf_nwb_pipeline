@@ -310,8 +310,8 @@ This standardization allows downstream analysis (spike detection, RMP, etc.) to 
 - `mean_frequency.csv` - Mean of all rows up to max frequency
 
 **Grid plots**:
-- `voltage_grid.png` / `current_grid.png` (single protocol)
-- `stimulus_grid.png` / `response_grid.png` (mixed protocol)
+- `voltage_grid.jpeg` / `current_grid.jpeg` (single protocol)
+- `stimulus_grid.jpeg` / `response_grid.jpeg` (mixed protocol)
 - Show all valid sweeps in grid layout
 
 ---

@@ -1071,7 +1071,7 @@ DOCUMENT HISTORY
 ================================================================================
 Version 01-07 (February 7, 2026):
   - Added FREQUENCY SUMMARY OUTPUT FILES section (min/max/mean_frequency.csv)
-  - Updated file format references from JPEG to PNG
+  - Updated file format references from PNG to JPEG
 
 Version 01-06 (January 2026):
   - Initial comprehensive documentation of all CSV parameters

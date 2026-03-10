@@ -17,11 +17,6 @@ import h5py
 import json
 import gc
 from typing import Tuple, Dict, Any
-import warnings
-warnings.filterwarnings(
-    "ignore",
-    message="Ignoring the following cached namespace"
-)
 
 # Set to True to enable verbose/debug output in terminal
 VERBOSE = False
@@ -534,18 +529,16 @@ For each bundle, this will:
     
     parent_path = Path(parent_dir)
     
-    # Look for directories that contain sub (they are bundle directories)
+    # Look for directories that contain manifest.json (they are bundle directories)
     bundle_dirs = []
-    for subfolder in parent_path.glob("*/"):
+    for subfolder in parent_path.rglob("manifest.json"):
         # Look for bundle directories inside each subject subfolder
-        for bundle_candidate in subfolder.glob("*"):
-            if not bundle_candidate.is_dir():
-                continue
-            # ✅ Condition: Must be inside a "sub-" directory
-            if not any(p.name.startswith("sub-") for p in bundle_candidate.parents):
-                continue
-            bundle_dirs.append(bundle_candidate)
-            
+        bundle_dir = subfolder.parent
+        if any(p.name.startswith("sub-") for p in bundle_dir.parents):
+                bundle_dirs.append(bundle_dir)
+        # for bundle_candidate in subfolder.glob("*"):
+        #     if bundle_candidate.is_dir() and (bundle_candidate / "manifest.json").exists():
+        #         bundle_dirs.append(bundle_candidate)
     
     bundle_dirs = sorted(bundle_dirs)
     
@@ -615,6 +608,10 @@ For each bundle, this will:
                 print(f"⚠ ERROR analyzing {bundle_path.name}: {e}")
                 print(f"  Continuing with next bundle...")
                 continue
+        
+        print(f"\n{'='*70}")
+        print(f"✓ Analysis complete!")
+        print('='*70)
             
     except ImportError as e:
         print(f"✗ ERROR: Could not import bundle_analyzer.py")
@@ -672,6 +669,9 @@ Note: You will need to provide paths for:
         parent_dir = run_nwb_data_preparation()
         
         # Automatically run analysis on all bundles
+        print("\n" + "="*70)
+        print("Data preparation complete!")
+        print("="*70)
         analyze_now = input("\nRun analysis on all bundles now? (y/n): ").strip().lower()
         
         if analyze_now == "y":
@@ -704,7 +704,7 @@ Note: You will need to provide paths for:
         # Analysis only
         run_nwb_analysis()
         print("\n" + "="*70)
-        print("✓ ALL BUNDLES ANALYZED")
+        print("✓ ANALYSIS COMPLETE")
         print("="*70)
         print()
 

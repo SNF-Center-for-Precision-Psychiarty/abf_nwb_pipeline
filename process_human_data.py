@@ -296,7 +296,7 @@ def extract_current_voltage_from_nwb(nwb, out_dir, cellNum, plot=False):
         
         fig.suptitle(f'Voltage Traces - {cellNum}', fontsize=16, fontweight='bold', y=0.995)
         plt.tight_layout()
-        voltage_grid_path = os.path.join(out_dir, "voltage_grid.png")
+        voltage_grid_path = os.path.join(out_dir, "voltage_grid.jpeg")
         plt.savefig(voltage_grid_path, dpi=300)
         plt.close()
         print(f"✔ Saved voltage grid → {voltage_grid_path}")
@@ -324,7 +324,7 @@ def extract_current_voltage_from_nwb(nwb, out_dir, cellNum, plot=False):
         
         fig.suptitle(f'Current Traces - {cellNum}', fontsize=16, fontweight='bold', y=0.995)
         plt.tight_layout()
-        current_grid_path = os.path.join(out_dir, "current_grid.png")
+        current_grid_path = os.path.join(out_dir, "current_grid.jpeg")
         plt.savefig(current_grid_path, dpi=300)
         plt.close()
         print(f"✔ Saved current grid → {current_grid_path}")

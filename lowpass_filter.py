@@ -224,20 +224,20 @@ def apply_lowpass_filter_to_bundle(bundle_dir: str,
     }
 
 
-if __name__ == "__main__":
-    # Example usage
-    import sys
+# if __name__ == "__main__":
+#     # Example usage
+#     import sys
     
-    if len(sys.argv) < 2:
-        print("Usage: python lowpass_filter.py <bundle_directory> [cutoff_hz]")
-        print("\nExample:")
-        print("  python lowpass_filter.py /path/to/bundle")
-        print("  python lowpass_filter.py /path/to/bundle 5000")
-        sys.exit(1)
+#     if len(sys.argv) < 2:
+#         print("Usage: python lowpass_filter.py <bundle_directory> [cutoff_hz]")
+#         print("\nExample:")
+#         print("  python lowpass_filter.py /path/to/bundle")
+#         print("  python lowpass_filter.py /path/to/bundle 5000")
+#         sys.exit(1)
     
-    bundle_dir = sys.argv[1]
-    cutoff_hz = float(sys.argv[2]) if len(sys.argv) > 2 else 5000
+#     bundle_dir = sys.argv[1]
+#     cutoff_hz = float(sys.argv[2]) if len(sys.argv) > 2 else 5000
     
-    # Apply filter with verbose output
-    result = apply_lowpass_filter_to_bundle(bundle_dir, cutoff_hz, inplace=True, verbose=True)
-    print(f"Result: Filtered {result['n_sweeps_mv']} voltage sweeps and {result['n_sweeps_pa']} current sweeps")
+#     # Apply filter with verbose output
+#     result = apply_lowpass_filter_to_bundle(bundle_dir, cutoff_hz, inplace=True, verbose=True)
+#     print(f"Result: Filtered {result['n_sweeps_mv']} voltage sweeps and {result['n_sweeps_pa']} current sweeps")

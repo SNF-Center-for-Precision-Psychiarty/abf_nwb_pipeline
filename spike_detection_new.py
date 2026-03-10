@@ -8,7 +8,7 @@ matplotlib.use('Agg')  # Non-interactive backend for speed
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
 from pathlib import Path
-from kink_detection import measure_kink_for_spike
+from kink_detection import measure_kink_for_spike, plot_kink_diagnostics
 from analysis_config import (
     PRE_THRESHOLD_WINDOW_MS,
     POST_THRESHOLD_WINDOW_MS,
@@ -30,98 +30,6 @@ VERBOSE = False
 
 def dbg(msg):
     if VERBOSE: print(f"[DEBUG] {msg}")
-
-# def calculate_stimulus_bounds_from_nwb(stimulus_data, sampling_rate, baseline_fraction=0.05, tolerance=0.05):
-#     """
-#     Calculate stimulus onset and offset times from injected current data.
-    
-#     Args:
-#         stimulus_data: numpy array of stimulus/current values
-#         sampling_rate: sampling rate in Hz
-#         baseline_fraction: fraction of data at start to use for baseline estimation
-#         tolerance: multiplier for baseline to determine threshold
-    
-#     Returns:
-#         tuple: (t_stim_start, t_stim_end) in seconds, or (None, None) if no stimulus found
-#     """
-#     # Calculate baseline from first N% of samples
-#     baseline = np.median(stimulus_data[:max(1, int(baseline_fraction * len(stimulus_data)))])
-    
-#     # Mark where stimulus differs significantly from baseline
-#     threshold = tolerance * (np.max(stimulus_data) - np.min(stimulus_data)) + 1e-12
-#     is_active = np.abs(stimulus_data - baseline) > threshold
-    
-#     # Find edges of stimulus period
-#     edges = np.diff(is_active.astype(int), prepend=0, append=0)
-#     starts = np.where(edges == 1)[0]
-#     ends = np.where(edges == -1)[0]
-    
-#     # Return first contiguous stimulus period in seconds
-#     if len(starts) > 0 and len(ends) > 0:
-#         t_start = starts[0] / sampling_rate
-#         t_end = ends[0] / sampling_rate
-#         return t_start, t_end
-    
-#     return None, None
-
-
-# def calculate_analysis_windows(stimulus_data, sampling_rate, pre_ms=4.5, post_ms=20.0, 
-#                                 padding_factor=0.05, baseline_fraction=0.05, tolerance=0.05):
-#     """
-#     Calculate analysis windows based on stimulus bounds with padding.
-    
-#     Args:
-#         stimulus_data: numpy array of stimulus/current values
-#         sampling_rate: sampling rate in Hz
-#         pre_ms: pre-stimulus window in milliseconds
-#         post_ms: post-stimulus window in milliseconds
-#         padding_factor: fraction of stimulus duration to use as padding on each side
-#         baseline_fraction: fraction of data at start to use for baseline estimation
-#         tolerance: multiplier for baseline to determine threshold
-    
-#     Returns:
-#         dict with keys: 't_min', 't_max', 't_plot_min', 't_plot_max', 't_start', 't_end', 't_min_current', 't_max_current'
-#         or None if stimulus not found
-#     """
-#     # Get stimulus bounds
-#     t_stim_start, t_stim_end = calculate_stimulus_bounds_from_nwb(
-#         stimulus_data, sampling_rate, baseline_fraction, tolerance
-#     )
-    
-#     if t_stim_start is None or t_stim_end is None:
-#         return None
-    
-#     # Convert milliseconds to seconds
-#     pre_s = pre_ms / 1000.0
-#     post_s = post_ms / 1000.0
-    
-#     # Calculate stimulus duration for padding
-#     stim_duration = t_stim_end - t_stim_start
-#     padding = stim_duration * padding_factor
-    
-#     # Define windows with padding
-#     t_min = t_stim_start + padding
-#     t_max = t_stim_end - padding
-#     t_plot_min = max(0, t_min - 0.02)  # Add small margin for plotting
-#     t_plot_max = t_max + 0.02
-#     t_start = t_min - pre_s
-#     t_end = t_max + post_s
-#     t_min_current = t_start
-#     t_max_current = t_end
-    
-#     return {
-#         't_min': t_min,
-#         't_max': t_max,
-#         't_plot_min': t_plot_min,
-#         't_plot_max': t_plot_max,
-#         't_start': t_start,
-#         't_end': t_end,
-#         't_min_current': t_min_current,
-#         't_max_current': t_max_current,
-#         't_stim_start': t_stim_start,
-#         't_stim_end': t_stim_end
-#     }
-
 
 def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced=False, analysis_windows=None, sweep_config=None, skip_plots=False):
     # Use parameters from centralized config
@@ -359,10 +267,10 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
         isi_ms = []
         
         # Kink detection metrics
-        kink_num_peaks = []
         kink_intervals_ms = []
         kink_ratios = []
-        kink_detected = []
+        kink_counts = []
+        kink_heights = []
         
         # Track segment formation statistics
         segment_success_count = 0
@@ -485,7 +393,7 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
                     v_threshold = float(voltage[threshold_idx])
 
                     if v_peak - v_threshold < MIN_PEAK_THRESHOLD_AMPLITUDE_MV:
-                        print(f"    WARNING: Peak - Threshold difference for peak {i} in sweep {sweep_number} is {v_peak - v_threshold:.2f} mV < {MIN_PEAK_THRESHOLD_AMPLITUDE_MV} mV, skipping.")
+                        print(f"    WARNING: Peak - Threshold difference for peak {i} is {v_peak - v_threshold:.2f} mV < {MIN_PEAK_THRESHOLD_AMPLITUDE_MV} mV, skipping.")
                         continue 
                 else:
                     print("    WARNING: no dv/dt below threshold% of max in upstroke window; threshold=NaN.")
@@ -584,7 +492,48 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
             # -------------------------
             # Kink detection in upstroke
             # -------------------------
-            kink_metrics = measure_kink_for_spike(voltage, time, peak, sweep_pre_samples)
+            # For debugging a specific sweep, peak:
+            # debug_kink = (sweep_number == 19 and i == 2)
+            debug_kink = False
+            
+            # Extract window from threshold to upstroke for kink detection
+            # Use indices relative to the upstroke window (w1_start_idx, w1_end_idx)
+            threshold_local = threshold_idx - w1_start_idx
+            up_local = up_idx - w1_start_idx
+            
+            # Range: threshold to upstroke (NOT including peak at end)
+            kink_v = v_up[threshold_local:up_local + 1]
+            kink_t = t_up[threshold_local:up_local + 1]
+            kink_dvdt = dvdt_up[threshold_local:up_local + 1]
+            
+            kink_metrics = measure_kink_for_spike(
+                kink_v,
+                kink_t,
+                kink_dvdt,
+                debug=debug_kink
+            )
+
+            # Notify user if kink detected
+            if kink_metrics['num_kinks'] > 0:
+                print(f"  ⚡ Kink detected in Sweep {sweep_number}, Peak #{i+1}")
+                print(f"      Kink interval: {kink_metrics['kink_interval_ms']:.2f} ms | Kink ratio: {kink_metrics['kink_ratio']:.3f}")
+                # Convert local kink index to global
+                kink_idx_local = kink_metrics['kink_idx']
+                kink_idx = threshold_idx + kink_idx_local
+                print(f"      Ihreshold index: {threshold_idx}")
+                print(f"      Kink index: {kink_idx}")
+                print(f"      Max Upstroke index: {up_idx}")
+
+                plot_kink_diagnostics(
+                    voltage,
+                    time,
+                    threshold_idx,
+                    kink_idx,
+                    up_idx,      # max upstroke index
+                    peak_idx,
+                    Path(bundle_path) / "Kink_Diagnostics",
+                    f"sweep{sweep_number}_peak{i}"
+            )
 
             # Collect per-peak metrics
             peak_voltages.append(v_peak)
@@ -606,15 +555,10 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
             up_down_ratios.append(upstroke_downstroke_ratio)
             
             # Append kink metrics
-            kink_num_peaks.append(kink_metrics['num_peaks_in_upstroke'])
+            kink_counts.append(kink_metrics['num_kinks'])
             kink_intervals_ms.append(kink_metrics['kink_interval_ms'])
             kink_ratios.append(kink_metrics['kink_ratio'])
-            kink_detected.append(kink_metrics['has_kink'])
-            
-            # Notify user if kink detected
-            if kink_metrics['has_kink']:
-                print(f"  ⚡ Kink detected in Sweep {sweep_number}, Peak #{i+1}")
-                print(f"      Kink interval: {kink_metrics['kink_interval_ms']:.2f} ms | Kink ratio: {kink_metrics['kink_ratio']:.3f}")
+            kink_heights.append(kink_metrics['kink_height_dvdt'])
             
             # If we have gotten this far, it has passed all checks and is a valid peak
             valid_peaks.append(peak)  # Store original peak index for ISI calculation
@@ -970,21 +914,42 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
                 "AP_Upstroke_Downstroke_Ratio": up_down_ratios,
                 "AP_Upstroke_mVms":upstrokes,
                 "AP_Downstroke_mVms": downstrokes,
-                "Kink_Num_Peaks_in_Upstroke": kink_num_peaks,
+                "Kink_Count": kink_counts,
                 "Kink_Interval_ms": kink_intervals_ms,
                 "Kink_Ratio": kink_ratios,
-                "Kink_Detected": kink_detected,
+                "Kink Height": kink_heights,
                 "ISI_ms": ([np.nan] + isi_ms.tolist())
             }
             
             # Pre-calculate kink metrics to avoid empty array warnings
-            def safe_nanmean(arr):
-                arr = np.asarray(arr)
-                return np.nanmean(arr) if np.any(~np.isnan(arr)) else np.nan
-            
-            avg_kink_num_peaks = safe_nanmean(kink_num_peaks)
-            avg_kink_interval_ms = safe_nanmean(kink_intervals_ms)
-            avg_kink_ratio = safe_nanmean(kink_ratios)
+
+            kink_count_arr = np.array(kink_counts)
+            kink_intervals_arr = np.array(kink_intervals_ms)
+            kink_ratios_arr = np.array(kink_ratios)
+            kink_heights_arr = np.array(kink_heights)
+
+            pct_spikes_with_kink = (
+                np.nansum(kink_count_arr > 0) / len(kink_count_arr) * 100
+                if len(kink_count_arr) > 0 else np.nan
+            )
+
+            avg_kink_interval_ms = (
+                np.nanmean(kink_intervals_arr)
+                if np.isfinite(kink_intervals_arr).any()
+                else np.nan
+            )
+
+            avg_kink_ratio = (
+                np.nanmean(kink_ratios_arr)
+                if np.isfinite(kink_ratios_arr).any()
+                else np.nan
+            )
+
+            avg_kink_height = (
+                np.nanmean(kink_heights_arr)
+                if np.isfinite(kink_heights_arr).any()
+                else np.nan
+            )
             
             sweep_results.append(
                 {
@@ -1006,10 +971,10 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
                     "avg_upstroke_downstroke_ratio": np.nanmean(up_down_ratios),
                     "avg_upstroke_mVms":np.nanmean(upstrokes),
                     "avg_downstroke_mVms": np.nanmean(downstrokes),
-                    "avg_kink_num_peaks": avg_kink_num_peaks,
+                    "pct_spikes_with_kink": pct_spikes_with_kink,
                     "avg_kink_interval_ms": avg_kink_interval_ms,
                     "avg_kink_ratio": avg_kink_ratio,
-                    "pct_spikes_with_kink": np.nansum(kink_detected) / len(kink_detected) * 100 if len(kink_detected) > 0 else np.nan,
+                    "avg_kink_height_dVdt": avg_kink_height,
                     "spike_frequency_Hz": len(peak_voltages) / (sweep_t_max - sweep_t_min),
                     "mean_isi_ms": mean_isi_ms,
                     "cv_isi": cv_isi,
@@ -1517,10 +1482,7 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
                         axes[idx].axis('off')
                     
                     plt.tight_layout()
-                    combined_path = bundle_path / "AP_Per_Sweep_combined.png"
-                    plt.savefig(combined_path, dpi=150, bbox_inches='tight')
                     plt.close()
-                    print(f"  [OK] Saved combined AP_Per_Sweep plot to {combined_path.name}")
             
             # Combined Averaged_Peaks_Per_Sweep plot
             if avg_peaks_dir.exists():
@@ -1549,10 +1511,7 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
                         axes[idx].axis('off')
                     
                     plt.tight_layout()
-                    combined_path = bundle_path / "Averaged_Peaks_Per_Sweep_combined.png"
-                    plt.savefig(combined_path, dpi=150, bbox_inches='tight')
                     plt.close()
-                    print(f"  [OK] Saved combined Averaged_Peaks_Per_Sweep plot to {combined_path.name}")
                     
         except ImportError:
             dbg("  WARNING: PIL (Pillow) not installed. Skipping GIF generation.")

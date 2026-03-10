@@ -1,7 +1,3 @@
-# Version 01-09
-# Original: Sneha Jaikumar
-# Adapted by: Manos
-# Date: 2026-01-08
 import json
 import os
 import re

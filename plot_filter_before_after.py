@@ -22,20 +22,25 @@ from scipy import signal
 from pathlib import Path
 import sys
 import json
+import gc
 
 # Import the filter function
 from lowpass_filter import apply_butterworth_lowpass
 
+# Configure matplotlib for memory efficiency
+plt.switch_backend('Agg')  # Use non-interactive backend to save memory
 
-def load_parquet_data(bundle_dir, data_type='mV'):
-    """Load voltage or current data from parquet files.
+
+def load_parquet_data_for_sweep(bundle_dir, data_type='mV', sweep_num=0):
+    """Load voltage or current data for a specific sweep from parquet files.
     
     Args:
         bundle_dir: Path to bundle directory
         data_type: 'mV' for voltage or 'pA' for current
+        sweep_num: Which sweep to load
         
     Returns:
-        DataFrame with data in appropriate format
+        1D numpy array of sweep data
     """
     bundle_path = Path(bundle_dir)
     
@@ -53,16 +58,35 @@ def load_parquet_data(bundle_dir, data_type='mV'):
     parquet_file = parquet_files[0]
     print(f"Loading: {parquet_file.relative_to(bundle_path)}")
     
-    df = pd.read_parquet(parquet_file)
+    # Load parquet file - be smart about columns
+    try:
+        # Try to read as parquet with columns selection for memory efficiency
+        df = pd.read_parquet(parquet_file, columns=['sweep', 'value'] if 'value' in pd.read_parquet(parquet_file, nrows=1).columns else None)
+    except:
+        # Fallback: load all columns
+        df = pd.read_parquet(parquet_file)
     
-    # If data is in long format (has 'sweep', 'value' columns), pivot it
-    if 'sweep' in df.columns and 'value' in df.columns and 't_s' in df.columns:
-        print("  Converting from long format to wide format...")
-        # Pivot to get sweeps as columns
-        df = df.pivot_table(index='t_s', columns='sweep', values='value', aggfunc='first')
-        df.columns = [f'sweep_{int(col)}' for col in df.columns]
+    # If data is in long format (has 'sweep', 'value' columns), extract just our sweep
+    if 'sweep' in df.columns and 'value' in df.columns:
+        print(f"  Extracting sweep {sweep_num}...")
+        sweep_data = df[df['sweep'] == sweep_num]['value'].values.astype(np.float64)
+        del df  # Free memory
+        gc.collect()
+        return sweep_data
     
-    return df
+    # Otherwise assume it's in wide format with columns like 'sweep_0', 'sweep_1', etc
+    sweep_col = f'sweep_{sweep_num}'
+    if sweep_col not in df.columns:
+        print(f"ERROR: {sweep_col} not found in {data_type} data")
+        available = [c for c in df.columns if 'sweep' in str(c).lower()]
+        print(f"Available sweeps: {', '.join(available[:5])}")
+        del df
+        raise ValueError(f"Sweep {sweep_num} not found")
+    
+    sweep_data = df[sweep_col].values.astype(np.float64)
+    del df  # Free memory
+    gc.collect()
+    return sweep_data
 
 
 def filter_data(data, fs=200000, cutoff=5000, order=4):
@@ -174,16 +198,19 @@ def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs
         fs: Sampling frequency
         title_prefix: Prefix for plot title
     """
-    # Compute FFTs
-    fft_raw = np.abs(np.fft.fft(sweep_data_raw))
-    fft_filtered = np.abs(np.fft.fft(sweep_data_filtered))
-    freqs = np.fft.fftfreq(len(sweep_data_raw), 1/fs)
+    # Compute FFTs - use efficient windowing to reduce noise
+    fft_raw = np.abs(np.fft.rfft(sweep_data_raw))  # rfft: only positive frequencies
+    fft_filtered = np.abs(np.fft.rfft(sweep_data_filtered))
+    freqs = np.fft.rfftfreq(len(sweep_data_raw), 1/fs)
     
-    # Only plot positive frequencies up to 50 kHz
-    mask = (freqs > 0) & (freqs < 50000)
+    # Plot positive frequencies up to Nyquist limit (100 kHz)
+    mask = (freqs < 100000)
     freqs_plot = freqs[mask]
     fft_raw_plot = fft_raw[mask]
     fft_filtered_plot = fft_filtered[mask]
+    
+    # Free large FFT arrays
+    del fft_raw, fft_filtered
     
     fig, axes = plt.subplots(2, 1, figsize=(14, 8))
     fig.suptitle(f'{title_prefix} Frequency Spectrum Comparison - Sweep {sweep_num}\n(Before vs After 5 kHz Low-Pass Filter)', 
@@ -195,12 +222,12 @@ def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs
     ax1.plot(freqs_plot, fft_filtered_plot, 'b-', alpha=0.8, linewidth=1.5, label='After filter')
     ax1.axvline(5000, color='green', linestyle='--', linewidth=2, label='5 kHz cutoff')
     ax1.fill_between([0, 5000], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='green', label='Kept')
-    ax1.fill_between([5000, 50000], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='red', label='Removed')
+    ax1.fill_between([5000, 100000], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='red', label='Removed')
     ax1.set_ylabel('Magnitude', fontsize=10)
     ax1.set_title('Linear Scale - See Low Frequencies Clearly', fontsize=11, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.legend(fontsize=9, loc='upper right')
-    ax1.set_xlim([0, 50000])
+    ax1.set_xlim([0, 100000])
     
     # Plot 2: Log scale
     ax2 = axes[1]
@@ -208,13 +235,13 @@ def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs
     ax2.semilogy(freqs_plot, fft_filtered_plot, 'b-', alpha=0.8, linewidth=1.5, label='After filter')
     ax2.axvline(5000, color='green', linestyle='--', linewidth=2, label='5 kHz cutoff')
     ax2.fill_between([0, 5000], 1, 1e10, alpha=0.1, color='green', label='Kept')
-    ax2.fill_between([5000, 50000], 1, 1e10, alpha=0.1, color='red', label='Removed')
+    ax2.fill_between([5000, 100000], 1, 1e10, alpha=0.1, color='red', label='Removed')
     ax2.set_xlabel('Frequency (Hz)', fontsize=10)
     ax2.set_ylabel('Magnitude (log scale)', fontsize=10)
     ax2.set_title('Log Scale - See High Frequencies and Attenuation Clearly', fontsize=11, fontweight='bold')
     ax2.grid(True, which='both', alpha=0.3)
     ax2.legend(fontsize=9, loc='upper right')
-    ax2.set_xlim([0, 50000])
+    ax2.set_xlim([0, 100000])
     ax2.set_ylim([1, 1e10])
     
     # Add annotation
@@ -259,18 +286,9 @@ def main():
     print(f"Plotting sweep {sweep_to_plot}")
     
     try:
-        # Load voltage data
-        print("\nLoading voltage (mV) data...")
-        df_mv = load_parquet_data(bundle_dir, 'mV')
-        
-        # Get the sweep
-        sweep_col = f'sweep_{sweep_to_plot}'
-        if sweep_col not in df_mv.columns:
-            print(f"ERROR: {sweep_col} not found in mV data")
-            print(f"Available sweeps: {', '.join([c for c in df_mv.columns if c.startswith('sweep_')])}")
-            sys.exit(1)
-        
-        sweep_mv_raw = df_mv[sweep_col].values.astype(np.float64)
+        # Load voltage data for specific sweep
+        print(f"\nLoading voltage (mV) data for sweep {sweep_to_plot}...")
+        sweep_mv_raw = load_parquet_data_for_sweep(bundle_dir, 'mV', sweep_to_plot)
         
         # Apply filter
         print("Applying 5 kHz Butterworth filter...")
@@ -282,24 +300,30 @@ def main():
                                     title_prefix='VOLTAGE (mV)')
         output_dir = bundle_path / 'filter_visualizations'
         output_dir.mkdir(exist_ok=True)
-        output_file1 = output_dir / f'voltage_before_after_sweep_{sweep_to_plot}.png'
+        output_file1 = output_dir / f'voltage_before_after_sweep_{sweep_to_plot}.jpeg'
         fig1.savefig(output_file1, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file1.name}")
         plt.close(fig1)
+        del fig1
+        gc.collect()
         
         print("Generating voltage frequency spectrum comparison plots...")
         fig2 = plot_frequency_comparison(sweep_mv_raw, sweep_mv_filtered, sweep_to_plot,
                                         title_prefix='VOLTAGE (mV)')
-        output_file2 = output_dir / f'voltage_spectrum_before_after_sweep_{sweep_to_plot}.png'
+        output_file2 = output_dir / f'voltage_spectrum_before_after_sweep_{sweep_to_plot}.jpeg'
         fig2.savefig(output_file2, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file2.name}")
         plt.close(fig2)
+        del fig2
+        gc.collect()
+        
+        # Free voltage data before loading current
+        del sweep_mv_raw, sweep_mv_filtered
+        gc.collect()
         
         # Load and plot current data
-        print("\nLoading current (pA) data...")
-        df_pa = load_parquet_data(bundle_dir, 'pA')
-        
-        sweep_pa_raw = df_pa[sweep_col].values.astype(np.float64)
+        print(f"\nLoading current (pA) data for sweep {sweep_to_plot}...")
+        sweep_pa_raw = load_parquet_data_for_sweep(bundle_dir, 'pA', sweep_to_plot)
         
         print("Applying 5 kHz Butterworth filter...")
         sweep_pa_filtered = filter_data(sweep_pa_raw)
@@ -307,18 +331,26 @@ def main():
         print("Generating current trace comparison plots...")
         fig3 = plot_sweep_comparison(sweep_pa_raw, sweep_pa_filtered, sweep_to_plot,
                                     title_prefix='CURRENT (pA)')
-        output_file3 = output_dir / f'current_before_after_sweep_{sweep_to_plot}.png'
+        output_file3 = output_dir / f'current_before_after_sweep_{sweep_to_plot}.jpeg'
         fig3.savefig(output_file3, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file3.name}")
         plt.close(fig3)
+        del fig3
+        gc.collect()
         
         print("Generating current frequency spectrum comparison plots...")
         fig4 = plot_frequency_comparison(sweep_pa_raw, sweep_pa_filtered, sweep_to_plot,
                                         title_prefix='CURRENT (pA)')
-        output_file4 = output_dir / f'current_spectrum_before_after_sweep_{sweep_to_plot}.png'
+        output_file4 = output_dir / f'current_spectrum_before_after_sweep_{sweep_to_plot}.jpeg'
         fig4.savefig(output_file4, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file4.name}")
         plt.close(fig4)
+        del fig4
+        gc.collect()
+        
+        # Free current data
+        del sweep_pa_raw, sweep_pa_filtered
+        gc.collect()
         
         # Print summary
         print("\n" + "="*70)

@@ -80,7 +80,7 @@ pip install -r requirements.txt
 | `numpy` | Array operations, numerical computations | All scripts |
 | `pandas` | DataFrame operations, CSV/Parquet I/O | All data processing scripts |
 | `scipy` | Signal processing (Savitzky-Golay filter, peak detection, linear regression) | `spike_detection_new.py`, `sav_gol_filter.py`, `input_resistance.py` |
-| `pynwb` | Reading NWB files | `process_human_data.py`, `process_human_data_mixed_protocol.py`, `read_and_plot_nwb.py` |
+| `pynwb` | Reading NWB files | `process_human_data.py`, `process_human_data_mixed_protocol.py`|
 | `h5py` | HDF5 file operations (NWB protocol detection) | `main.py` |
 | `pyarrow` | Parquet file reading/writing (fast columnar storage) | All data extraction scripts |
 | `openpyxl` | Excel template reading/writing for metadata logs | `process_human_data.py`, `process_human_data_mixed_protocol.py` |

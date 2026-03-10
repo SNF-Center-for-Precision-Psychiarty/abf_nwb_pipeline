@@ -39,7 +39,7 @@ from pynwb import NWBHDF5IO
 # NOTE: REMOVED - This was importing old analysis_config.py with wrong signature
 # sys.path.insert(0, '/Users/snehajaikumar/Version 01-06')
 
-from sweep_classifier import process_bundle, visualize_sweeps_from_parquet, visualize_mixed_protocol_sweeps
+from sweep_classifier import classify_bundle_sweeps_nwb, visualize_sweeps_from_parquet, visualize_mixed_protocol_sweeps
 from run_analysis import run_for_bundle
 
 
@@ -98,7 +98,7 @@ def main():
     print(f"  Bundle: {bundle_path}")
     
     try:
-        sweep_config = process_bundle(str(bundle_path))
+        sweep_config = classify_bundle_sweeps_nwb(str(bundle_path))
         print(f"  ✓ sweep_config.json created")
     except Exception as e:
         print(f"  ✗ ERROR processing bundle: {e}")
@@ -110,7 +110,7 @@ def main():
     if VERBOSE:
         print(f"\n[STEP 2] Sweep Classification Visualization")
         print(f"  Would you like to visualize the kept vs dropped sweeps?")
-        print(f"  This will create PNG plots showing which sweeps were kept and rejected.")
+        print(f"  This will create JPEG plots showing which sweeps were kept and rejected.")
     
     # Auto-yes visualization
     viz_choice = "yes"

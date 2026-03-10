@@ -325,7 +325,7 @@ def run_sav_gol(df, df_analysis, fs, bundle_path, sweep_config=None, skip_plots=
             plt.grid(True, alpha=0.3)  # Add grid for easier reading
             plt.tight_layout()
             #plt.show()
-            plt.savefig(plot_dir / f'SavGol_Sweep{sweep_id}_baseline.png', dpi=150)
+            plt.savefig(plot_dir / f'SavGol_Sweep{sweep_id}_baseline.jpeg', dpi=150)
             plt.close()
 
         sweep_df = pd.DataFrame({
@@ -444,7 +444,7 @@ def run_sav_gol(df, df_analysis, fs, bundle_path, sweep_config=None, skip_plots=
         plt.title(f"Resting Membrane Potential Distribution ({window_ms} ms bins across sweeps)")
         plt.tight_layout()
         #plt.show()
-        plt.savefig(bundle_path /'RMP_Dist_Post_Filter.png', dpi=150)
+        plt.savefig(bundle_path /'RMP_Dist_Post_Filter.jpeg', dpi=150)
         plt.close()
     else:
         vmin, vmax = Vm_all.min(), Vm_all.max()
