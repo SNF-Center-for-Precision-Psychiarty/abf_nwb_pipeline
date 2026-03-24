@@ -983,6 +983,8 @@ def load_sweep_config(bundle_dir: str):
 def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots: bool = False):
     p = Path(bundle_dir)
     pA_was_replaced = False  # Track if pA data was replaced
+    low pass filter of 20khz if sampling rate is above 40khz
+no filter if less than 40khz
     
     print(f"\n{'='*70}")
     print(f"[Analysis] Starting analysis pipeline for bundle")
@@ -1066,21 +1068,39 @@ def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots
     df_pa = pd.read_parquet(p / man["tables"]["pa"])
     print(f"  ✓ Current: {df_pa.shape[0]:,} samples, {df_pa['sweep'].nunique()} sweeps")
     
-    # STEP 2: Apply low-pass filter (5 kHz) and generate sweep configuration
+    # STEP 2: Apply low-pass filter based on sampling rate and generate sweep configuration
     print(f"\n[Step 2] Sweep configuration & filtering...")
-    print(f"  Applying 5 kHz low-pass filter (pre-processing)...")
-    try:
-        filter_result = apply_lowpass_filter_to_bundle(bundle_dir, cutoff_hz=5000, inplace=True, verbose=False)
-        print(f"  ✓ Low-pass filter applied (5 kHz cutoff)")
-        print(f"    - Filtered {filter_result['n_sweeps_mv']} voltage sweeps")
-        print(f"    - Filtered {filter_result['n_sweeps_pa']} current sweeps")
-        
-        # Reload the filtered data
-        df_mv = pd.read_parquet(p / man["tables"]["mv"])
-        df_pa = pd.read_parquet(p / man["tables"]["pa"])
-    except Exception as e:
-        print(f"  ⚠ WARNING: Low-pass filter failed: {e}")
-        print(f"  Proceeding with unfiltered data...")
+    
+    # Determine filter cutoff based on sampling rate
+    fs = man["meta"]["sampleRate_Hz"]
+    nyquist_freq = fs / 2
+    
+    if fs >= 40000:
+        # High sampling rate: apply 20 kHz low-pass filter
+        filter_cutoff = 20000
+        print(f"  High sampling rate ({fs} Hz) detected")
+        print(f"  Applying 20 kHz low-pass filter (pre-processing)...")
+    else:
+        # Low sampling rate: no filter (avoid over-filtering)
+        filter_cutoff = None
+        print(f"  Low sampling rate ({fs} Hz) detected")
+        print(f"  Skipping low-pass filter (sampling rate below 40 kHz threshold)...")
+    
+    if filter_cutoff is not None and filter_cutoff < nyquist_freq:
+        try:
+            filter_result = apply_lowpass_filter_to_bundle(bundle_dir, cutoff_hz=filter_cutoff, inplace=True, verbose=False)
+            print(f"  ✓ Low-pass filter applied ({filter_cutoff/1000:.0f} kHz cutoff)")
+            print(f"    - Filtered {filter_result['n_sweeps_mv']} voltage sweeps")
+            print(f"    - Filtered {filter_result['n_sweeps_pa']} current sweeps")
+            
+            # Reload the filtered data
+            df_mv = pd.read_parquet(p / man["tables"]["mv"])
+            df_pa = pd.read_parquet(p / man["tables"]["pa"])
+        except Exception as e:
+            print(f"  ⚠ WARNING: Low-pass filter failed: {e}")
+            print(f"  Proceeding with unfiltered data...")
+    else:
+        print(f"  ℹ No filter applied (sampling rate {fs} Hz below threshold or invalid cutoff)")
     
     print(f"  Generating filter visualizations...")
     visualize_filter_all_sweeps(bundle_dir, skip_plots=skip_plots)

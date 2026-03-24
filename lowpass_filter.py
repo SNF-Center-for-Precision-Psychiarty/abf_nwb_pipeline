@@ -9,6 +9,7 @@ The filter operates on raw voltage and current data immediately
 after loading, before any spike detection or analysis steps.
 """
 
+
 import pandas as pd
 import numpy as np
 from scipy import signal
@@ -18,7 +19,7 @@ from pathlib import Path
 
 def apply_butterworth_lowpass(data_array: np.ndarray, 
                               sampling_rate: float,
-                              cutoff_hz: float = 5000,
+                              cutoff_hz: float = 5000, 
                               order: int = 4) -> np.ndarray:
     """
     Apply a Butterworth low-pass filter to remove high-frequency noise.
@@ -126,9 +127,13 @@ def apply_lowpass_filter_to_bundle(bundle_dir: str,
         # Multiple rates - use max for now (will handle per-sweep later if needed)
         fs_mv = float(meta.get("rate")[0]) if meta.get("rate") else 200000.0
         fs_pa = float(meta.get("rate")[0]) if meta.get("rate") else 200000.0
+        print("SAMPLING RATE")
+        print(fs_mv, fs_pa)
     else:
         fs_mv = float(meta.get("rate", 200000.0))
         fs_pa = float(meta.get("rate", 200000.0))
+        print("SAMPLING RATE")
+        print(fs_mv, fs_pa)
     
     if verbose:
         print(f"\n{'='*70}")
