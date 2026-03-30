@@ -19,7 +19,7 @@ from pathlib import Path
 
 def apply_butterworth_lowpass(data_array: np.ndarray, 
                               sampling_rate: float,
-                              cutoff_hz: float = 5000, 
+                              cutoff_hz: float, 
                               order: int = 4) -> np.ndarray:
     """
     Apply a Butterworth low-pass filter to remove high-frequency noise.
@@ -27,7 +27,7 @@ def apply_butterworth_lowpass(data_array: np.ndarray,
     Args:
         data_array: Input signal (1D numpy array)
         sampling_rate: Sampling rate in Hz
-        cutoff_hz: Cutoff frequency in Hz (default 5000 Hz = 5 kHz)
+        cutoff_hz: Cutoff frequency in Hz (REQUIRED parameter)
         order: Filter order (default 4)
         
     Returns:
@@ -57,14 +57,14 @@ def apply_butterworth_lowpass(data_array: np.ndarray,
 
 def filter_sweep_data(df_sweep: pd.DataFrame, 
                       sampling_rate: float,
-                      cutoff_hz: float = 5000) -> pd.DataFrame:
+                      cutoff_hz: float) -> pd.DataFrame:
     """
     Apply low-pass filter to a single sweep's data.
     
     Args:
         df_sweep: DataFrame with columns like 'value' for one sweep
         sampling_rate: Sampling rate in Hz
-        cutoff_hz: Cutoff frequency in Hz
+        cutoff_hz: Cutoff frequency in Hz (REQUIRED parameter)
         
     Returns:
         DataFrame with filtered 'value' column
@@ -83,7 +83,7 @@ def filter_sweep_data(df_sweep: pd.DataFrame,
 
 
 def apply_lowpass_filter_to_bundle(bundle_dir: str, 
-                                   cutoff_hz: float = 5000,
+                                   cutoff_hz: float,
                                    inplace: bool = True,
                                    verbose: bool = False) -> dict:
     """
@@ -95,7 +95,7 @@ def apply_lowpass_filter_to_bundle(bundle_dir: str,
     
     Args:
         bundle_dir: Path to the bundle directory
-        cutoff_hz: Cutoff frequency in Hz (default 5000)
+        cutoff_hz: Cutoff frequency in Hz (REQUIRED parameter)
         inplace: If True, overwrites parquet files. If False, returns filtered data only.
         verbose: Print progress information
         
@@ -121,27 +121,44 @@ def apply_lowpass_filter_to_bundle(bundle_dir: str,
     
     man = json.loads(manifest_path.read_text())
     
-    # Get sampling rates
+    # Get sampling rates from manifest
     meta = man.get("meta", {})
-    if isinstance(meta.get("rate"), list):
-        # Multiple rates - use max for now (will handle per-sweep later if needed)
-        fs_mv = float(meta.get("rate")[0]) if meta.get("rate") else 200000.0
-        fs_pa = float(meta.get("rate")[0]) if meta.get("rate") else 200000.0
-        print("SAMPLING RATE")
-        print(fs_mv, fs_pa)
+    sample_rate_hz = meta.get("sampleRate_Hz")
+    protocols = man.get("protocols", {})
+    
+    if sample_rate_hz is None:
+        raise ValueError(f"sampleRate_Hz not found in manifest for {bundle_dir}")
+    
+    # Handle both single rate and list of rates
+    if isinstance(sample_rate_hz, list):
+        # Multiple rates - will use per-sweep rates from protocols dict
+        # Build mapping from sweep ID to sampling rate
+        sweep_to_rate = {}
+        for protocol_id, protocol_info in protocols.items():
+            rate_str = protocol_info.get("rate")
+            if rate_str:
+                sweep_to_rate[int(protocol_id)] = float(rate_str)
+        
+        if verbose:
+            print(f"  Note: Multiple sampling rates detected")
+            print(f"  Unique rates: {sorted(set(sweep_to_rate.values()))}")
+            print(f"  Will use per-sweep rates from protocols")
     else:
-        fs_mv = float(meta.get("rate", 200000.0))
-        fs_pa = float(meta.get("rate", 200000.0))
-        print("SAMPLING RATE")
-        print(fs_mv, fs_pa)
+        # Single rate - use for all sweeps
+        fs_mv = float(sample_rate_hz)
+        fs_pa = float(sample_rate_hz)
+        sweep_to_rate = None
     
     if verbose:
         print(f"\n{'='*70}")
         print(f"LOW-PASS FILTER PRE-PROCESSING")
         print(f"{'='*70}")
         print(f"Cutoff frequency: {cutoff_hz} Hz ({cutoff_hz/1000:.1f} kHz)")
-        print(f"Voltage sampling rate: {fs_mv} Hz")
-        print(f"Current sampling rate: {fs_pa} Hz")
+        if sweep_to_rate is None:
+            print(f"Sampling rate: {fs_mv} Hz")
+        else:
+            unique_rates = sorted(set(sweep_to_rate.values()))
+            print(f"Sampling rates: {unique_rates} Hz (per-sweep)")
     
     # Load voltage data
     mv_path = p / man["tables"]["mv"]
@@ -150,25 +167,40 @@ def apply_lowpass_filter_to_bundle(bundle_dir: str,
     df_mv = pd.read_parquet(mv_path)
     n_sweeps_mv = df_mv['sweep'].nunique()
     
+    # Save backup of raw (unfiltered) voltage data BEFORE filtering
+    mv_raw_path = p / man["tables"]["mv"].replace('.parquet', '_raw.parquet')
+    df_mv.to_parquet(mv_raw_path, index=False)
+    
     if verbose:
         print(f"  Loaded: {len(df_mv):,} samples, {n_sweeps_mv} sweeps")
+        print(f"  Saved backup of raw data to {mv_raw_path.name}")
         print(f"  Filtering each sweep individually...")
     
     # Apply filter to each sweep separately
     df_mv_filtered = df_mv.copy()
-    for sweep_id in df_mv['sweep'].unique():
+    for sweep_id in sorted(df_mv['sweep'].unique()):
         mask = df_mv['sweep'] == sweep_id
         df_sweep = df_mv[mask]
         
+        # Determine sampling rate for this sweep
+        if sweep_to_rate is not None:
+            # Multiple rates - get rate specific to this sweep
+            fs_sweep = sweep_to_rate.get(int(sweep_id))
+            if fs_sweep is None:
+                raise ValueError(f"No sampling rate found in protocols for sweep {sweep_id}")
+        else:
+            # Single rate - use the same rate for all sweeps
+            fs_sweep = fs_mv
+        
         filtered_vals = apply_butterworth_lowpass(
             df_sweep['value'].values,
-            fs_mv,
+            fs_sweep,
             cutoff_hz
         )
         df_mv_filtered.loc[mask, 'value'] = filtered_vals
         
         if verbose and sweep_id % max(1, n_sweeps_mv // 10) == 0:
-            print(f"    Progress: Sweep {sweep_id}/{n_sweeps_mv}...")
+            print(f"    Progress: Sweep {sweep_id}/{n_sweeps_mv} (fs={fs_sweep} Hz)...")
     
     if verbose:
         print(f"  ✓ Voltage filtering complete")
@@ -180,25 +212,40 @@ def apply_lowpass_filter_to_bundle(bundle_dir: str,
     df_pa = pd.read_parquet(pa_path)
     n_sweeps_pa = df_pa['sweep'].nunique()
     
+    # Save backup of raw (unfiltered) current data BEFORE filtering
+    pa_raw_path = p / man["tables"]["pa"].replace('.parquet', '_raw.parquet')
+    df_pa.to_parquet(pa_raw_path, index=False)
+    
     if verbose:
         print(f"  Loaded: {len(df_pa):,} samples, {n_sweeps_pa} sweeps")
+        print(f"  Saved backup of raw data to {pa_raw_path.name}")
         print(f"  Filtering each sweep individually...")
     
     # Apply filter to each sweep separately
     df_pa_filtered = df_pa.copy()
-    for sweep_id in df_pa['sweep'].unique():
+    for sweep_id in sorted(df_pa['sweep'].unique()):
         mask = df_pa['sweep'] == sweep_id
         df_sweep = df_pa[mask]
         
+        # Determine sampling rate for this sweep
+        if sweep_to_rate is not None:
+            # Multiple rates - get rate specific to this sweep
+            fs_sweep = sweep_to_rate.get(int(sweep_id))
+            if fs_sweep is None:
+                raise ValueError(f"No sampling rate found in protocols for sweep {sweep_id}")
+        else:
+            # Single rate - use the same rate for all sweeps
+            fs_sweep = fs_pa
+        
         filtered_vals = apply_butterworth_lowpass(
             df_sweep['value'].values,
-            fs_pa,
+            fs_sweep,
             cutoff_hz
         )
         df_pa_filtered.loc[mask, 'value'] = filtered_vals
         
         if verbose and sweep_id % max(1, n_sweeps_pa // 10) == 0:
-            print(f"    Progress: Sweep {sweep_id}/{n_sweeps_pa}...")
+            print(f"    Progress: Sweep {sweep_id}/{n_sweeps_pa} (fs={fs_sweep} Hz)...")
     
     if verbose:
         print(f"  ✓ Current filtering complete")

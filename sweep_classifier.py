@@ -669,7 +669,7 @@ def detect_right_angle_in_voltage(voltage, time, stim_start, stim_end, sampling_
     return False, None
 
 
-def analyze_single_sweep(current, time, voltage=None, sweep_id=None):
+def analyze_single_sweep(current, time, voltage=None, sweep_id=None, sampling_rate=None):
     """
     Analyze one sweep to identify baseline, stimulus, and response windows.
     
@@ -694,7 +694,7 @@ def analyze_single_sweep(current, time, voltage=None, sweep_id=None):
     # Check for voltage artifacts (right angles) if voltage data is provided
     if voltage is not None and is_valid:
         has_artifact, artifact_desc = detect_right_angle_in_voltage(
-            voltage, time, stim_start, stim_end, sweep_id=sweep_id
+            voltage, time, stim_start, stim_end, sampling_rate=sampling_rate, sweep_id=sweep_id
         )
         if has_artifact:
             is_valid = False
@@ -726,10 +726,13 @@ def sweep_config_to_json(bundle_dir, df_stim, manifest, df_voltage=None):
     Args:
         bundle_dir: Path to bundle directory
         df_stim: DataFrame with stimulus data (has 'sweep', 't_s', and 'value' columns)
-        manifest: Manifest with metadata (currently unused in this function)
+        manifest: Manifest with metadata (contains sampling rate for artifact detection)
         df_voltage: DataFrame with voltage data (has 'sweep', 't_s', and 'value' columns), optional
     """
     p = Path(bundle_dir)
+    
+    # Extract sampling rate from manifest for consistent artifact detection
+    sampling_rate = float(manifest["meta"]["sampleRate_Hz"]) if "sampleRate_Hz" in manifest.get("meta", {}) else None
     
     # Get all unique sweep IDs (column is 'sweep', not 'sweep_id')
     all_sweeps = sorted(df_stim['sweep'].unique())
@@ -765,8 +768,8 @@ def sweep_config_to_json(bundle_dir, df_stim, manifest, df_voltage=None):
             if len(df_sweep_voltage) > 0:
                 voltage = df_sweep_voltage["value"].values
         
-        # Analyze this sweep using the stored time vector
-        sweep_result = analyze_single_sweep(stimulus, time, voltage=voltage, sweep_id=sweep_id)
+        # Analyze this sweep using the stored time vector and manifest sampling rate
+        sweep_result = analyze_single_sweep(stimulus, time, voltage=voltage, sweep_id=sweep_id, sampling_rate=sampling_rate)
         
         # Store result
         sweep_config["sweeps"][str(sweep_id)] = sweep_result
@@ -870,6 +873,9 @@ def classify_bundle_sweeps_abf(bundle_dir, plot_sweeps=True):
     
     with open(manifest_path) as f:
         manifest = json.load(f)
+    
+    # Extract sampling rate from manifest for consistent artifact detection
+    sampling_rate = float(manifest["meta"]["sampleRate_Hz"]) if "sampleRate_Hz" in manifest.get("meta", {}) else None
     
     # Load parquet files
     pa_path = p / manifest["tables"]["pa"]
@@ -1039,7 +1045,7 @@ def classify_bundle_sweeps_abf(bundle_dir, plot_sweeps=True):
         # Detect sharp right angles (artifacts) that may indicate recording issues
         if voltage_vals is not None and is_valid and len(voltage_vals) > 0:
             has_artifact, artifact_desc = detect_right_angle_in_voltage(
-                voltage_vals, time_vals, best_stim_start, best_stim_end, sweep_id=sweep_id
+                voltage_vals, time_vals, best_stim_start, best_stim_end, sampling_rate=sampling_rate, sweep_id=sweep_id
             )
             if has_artifact:
                 is_valid = False
@@ -2030,6 +2036,53 @@ def visualize_mixed_protocol_sweeps(bundle_dir, kept_sweeps, dropped_sweeps):
         plt.close(fig)
         print(f"  ✓ Saved: {dropped_stim_path}")
         plot_paths.append(dropped_stim_path)
+        
+        # ========== DROPPED SWEEPS - RESPONSE (GRID) ==========
+        ncols = 4
+        nrows = math.ceil(len(dropped_sweeps) / ncols)
+        
+        fig, axes = plt.subplots(nrows, ncols, figsize=(16, 3 * nrows))
+        if nrows == 1 and ncols == 1:
+            axes = np.array([[axes]])
+        elif nrows == 1 or ncols == 1:
+            axes = axes.reshape(nrows, ncols)
+        
+        for idx, sweep_id in enumerate(dropped_sweeps):
+            row = idx // ncols
+            col = idx % ncols
+            ax = axes[row, col]
+            
+            if sweep_id in all_sweeps:
+                sweep_data = df_resp[df_resp['sweep'] == sweep_id]
+                sweep_data = sweep_data[sweep_data['unit'].str.lower().str.contains('volt', na=False)]
+                
+                if len(sweep_data) > 0:
+                    time = sweep_data['t_s'].values
+                    time_rel = time - time[0]
+                    response = sweep_data['value'].values
+                    
+                    ax.plot(time_rel, response, linewidth=1.5, color='salmon')
+                    
+                    ax.set_title(f"Sweep {sweep_id}", fontsize=10, fontweight='bold')
+                    ax.set_xlabel("Time (s)", fontsize=9)
+                    ax.set_ylabel("Response", fontsize=9)
+                    ax.grid(True, alpha=0.3)
+                    ax.tick_params(labelsize=8)
+        
+        # Hide unused subplots
+        for idx in range(len(dropped_sweeps), nrows * ncols):
+            row = idx // ncols
+            col = idx % ncols
+            axes[row, col].set_visible(False)
+        
+        fig.suptitle(f"DROPPED Sweeps - Response ({len(dropped_sweeps)} sweeps)", 
+                     fontsize=14, fontweight='bold', y=0.995, color='red')
+        plt.tight_layout()
+        dropped_resp_path = p / "dropped_sweeps_response.jpeg"
+        fig.savefig(dropped_resp_path, dpi=150, format='jpeg', bbox_inches='tight')
+        plt.close(fig)
+        print(f"  ✓ Saved: {dropped_resp_path}")
+        plot_paths.append(dropped_resp_path)
     else:
         if VERBOSE: print(f"  ℹ No dropped sweeps to visualize")
     

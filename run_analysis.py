@@ -18,7 +18,7 @@ import subprocess
 VERBOSE = False
 
 
-def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_sweeps: int = 4):
+def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_sweeps: int = 4, cutoff_hz: Optional[int] = None, sampling_rate: Optional[float] = None):
     """
     Create before/after filter visualizations for all (or selected) sweeps in a bundle.
     
@@ -27,12 +27,30 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
         skip_plots: If True, skip visualization (for faster processing)
         max_sweeps: Maximum number of sweeps to visualize (default 12 for good coverage)
                    Set to None to visualize all sweeps
+        cutoff_hz: Cutoff frequency in Hz - REQUIRED parameter
+        sampling_rate: Sampling rate in Hz - used as fallback if manifest has single rate
     """
     if skip_plots:
         return
     
     try:
         bundle_path = Path(bundle_dir)
+        
+        # Load manifest to get per-sweep sampling rates if mixed protocol
+        manifest_path = bundle_path / "manifest.json"
+        sweep_to_rate = {}
+        
+        if manifest_path.exists():
+            man = json.loads(manifest_path.read_text())
+            sample_rate_hz = man.get("meta", {}).get("sampleRate_Hz")
+            protocols = man.get("protocols", {})
+            
+            if isinstance(sample_rate_hz, list):
+                # Mixed protocol - build mapping from sweep ID to sampling rate
+                for protocol_id, protocol_info in protocols.items():
+                    rate_str = protocol_info.get("rate")
+                    if rate_str:
+                        sweep_to_rate[int(protocol_id)] = float(rate_str)
         
         # Get list of parquet files
         mv_files = list(bundle_path.rglob("mV_*.parquet"))
@@ -53,8 +71,7 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
         else:
             sweeps_to_plot = min(max_sweeps, n_sweeps)
         
-        print(f"\n[Step 1.6] Generating before/after filter visualizations...")
-        print(f"  Creating plots for {sweeps_to_plot} sweeps (of {n_sweeps} total)...")
+        print(f"  Creating filter visualizations for {sweeps_to_plot} sweeps (of {n_sweeps} total)...")
         
         # Get current working directory to find plot script
         script_path = Path(__file__).parent / "plot_filter_before_after.py"
@@ -64,25 +81,33 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
         
         for sweep_num in range(sweeps_to_plot):
             try:
+                # Determine sampling rate for this sweep
+                if sweep_to_rate:
+                    # Mixed protocol - look up rate for this sweep
+                    sweep_fs = sweep_to_rate.get(sweep_num, sampling_rate)
+                else:
+                    # Single protocol - use the provided rate
+                    sweep_fs = sampling_rate
+                
                 # Run the visualization script
                 cmd = [
                     "python",
                     str(script_path),
                     str(bundle_dir),
-                    "--sweep", str(sweep_num)
+                    "--sweep", str(sweep_num),
+                    "--cutoff", str(cutoff_hz),
+                    "--sampling-rate", str(int(sweep_fs))
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 
                 if result.returncode == 0:
                     print(f"  ✓ Sweep {sweep_num}")
                 else:
-                    if VERBOSE:
-                        print(f"  ⚠ Sweep {sweep_num} failed: {result.stderr[:100]}")
+                    print(f"  ⚠ Sweep {sweep_num} failed: {result.stderr[:200]}")
             except subprocess.TimeoutExpired:
                 print(f"  ⚠ Sweep {sweep_num} timed out")
             except Exception as e:
-                if VERBOSE:
-                    print(f"  ⚠ Error with sweep {sweep_num}: {e}")
+                print(f"  ⚠ Error with sweep {sweep_num}: {e}")
         
         # Print summary
         viz_dir = bundle_path / "filter_visualizations"
@@ -90,36 +115,11 @@ def visualize_filter_all_sweeps(bundle_dir: str, skip_plots: bool = False, max_s
             n_plots = len(list(viz_dir.glob("*.jpeg")))
             print(f"  ✓ {n_plots} visualization files created")
             print(f"    Location: {viz_dir}")
+        else:
+            print(f"  ⚠ No visualizations directory found at {viz_dir}")
         
     except Exception as e:
-        if VERBOSE:
-            print(f"  ⚠ Could not generate filter visualizations: {e}")
-
-
-def checkpoint_with_resume(stage_name: str, bundle_dir: str = None) -> bool:
-    """
-    Checkpoint that prompts user to continue or pause for inspection.
-    Allows seamless resume within the same pipeline execution.
-    
-    Args:
-        stage_name: Description of the completed stage
-        bundle_dir: Path to bundle (for displaying file location)
-        
-    Returns:
-        True to proceed, False to pause (but stay in function for resume)
-    """
-    print("\n" + "="*70)
-    print(f"✓ CHECKPOINT: {stage_name}")
-    print("="*70)
-    if bundle_dir:
-        print(f"Bundle: {Path(bundle_dir).name}")
-    print("\nYou can now inspect the results before proceeding.")
-    if bundle_dir:
-        print(f"Location: {bundle_dir}")
-    
-    response = input("\nContinue to next step? (y/n): ").strip().lower()
-    return response == 'y'
-
+        print(f"  ⚠ Could not generate filter visualizations: {e}")
 
 def detect_hardware_malfunction(bundle_dir: str):
     """
@@ -457,6 +457,7 @@ def replace_current_data_with_reference(bundle_dir: str, reference_bundle_dir: s
 
 from sweep_classifier import classify_bundle_sweeps_nwb
 from sweep_classifier import classify_bundle_sweeps_abf
+from sweep_classifier import visualize_sweeps_from_parquet
 
 
 def generate_summary_plot(bundle_dir: str):
@@ -560,20 +561,26 @@ def generate_summary_plot(bundle_dir: str):
     if dropped_pa.exists():
         image_paths.append(dropped_pa)
         labels.append("Dropped Sweeps - Current")
+
+    # 9. Dropped sweeps voltage
+    dropped_mv = p / "dropped_sweeps_voltage.jpeg"
+    if dropped_mv.exists():
+        image_paths.append(dropped_mv)
+        labels.append("Dropped Sweeps - Voltage")
     
-    # 9. Current grid (if exists)
+    # 10. Current grid (if exists)
     current_grid = p / "current_grid.jpeg"
     if current_grid.exists():
         image_paths.append(current_grid)
         labels.append("Current Grid (All Sweeps)")
     
-    # 10. Voltage grid (if exists)
+    # 11. Voltage grid (if exists)
     voltage_grid = p / "voltage_grid.jpeg"
     if voltage_grid.exists():
         image_paths.append(voltage_grid)
         labels.append("Voltage Grid (All Sweeps)")
     
-    # 11. Kink diagnostics
+    # 12. Kink diagnostics
     kink_dir = p / "Kink_Diagnostics"
     if kink_dir.exists():
         for f in sorted(kink_dir.glob("*.jpeg")):
@@ -722,6 +729,34 @@ def generate_summary_plot(bundle_dir: str):
                 ax.imshow(img)
                 ax.axis('off')
                 ax.set_title("Dropped Sweeps - Stimulus", fontsize=12, fontweight='bold')
+                img.close()
+            
+            plt.tight_layout()
+            pdf.savefig(fig, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+        
+        # PAGE 4b: dropped_sweeps_voltage (or dropped_sweeps_response for mixed protocol)
+        dropped_mv = p / "dropped_sweeps_voltage.jpeg"
+        dropped_resp = p / "dropped_sweeps_response.jpeg"
+        
+        if dropped_mv.exists() or dropped_resp.exists():
+            fig = plt.figure(figsize=(11, 8.5))
+            ax = fig.add_subplot(111)
+            
+            # Single protocol (voltage)
+            if dropped_mv.exists():
+                img = Image.open(dropped_mv)
+                ax.imshow(img)
+                ax.axis('off')
+                ax.set_title("Dropped Sweeps - Voltage", fontsize=12, fontweight='bold')
+                img.close()
+            
+            # Mixed protocol (response)
+            elif dropped_resp.exists():
+                img = Image.open(dropped_resp)
+                ax.imshow(img)
+                ax.axis('off')
+                ax.set_title("Dropped Sweeps - Response", fontsize=12, fontweight='bold')
                 img.close()
             
             plt.tight_layout()
@@ -980,11 +1015,9 @@ def load_sweep_config(bundle_dir: str):
         return sweep_config
 
 
-def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots: bool = False):
+def run_for_bundle(bundle_dir: str, reference_bundle_dir: str = None, skip_plots: bool = False, no_checkpoints: bool = False):
     p = Path(bundle_dir)
     pA_was_replaced = False  # Track if pA data was replaced
-    low pass filter of 20khz if sampling rate is above 40khz
-no filter if less than 40khz
     
     print(f"\n{'='*70}")
     print(f"[Analysis] Starting analysis pipeline for bundle")
@@ -1072,19 +1105,25 @@ no filter if less than 40khz
     print(f"\n[Step 2] Sweep configuration & filtering...")
     
     # Determine filter cutoff based on sampling rate
-    fs = man["meta"]["sampleRate_Hz"]
+    sample_rate_hz = man["meta"].get("sampleRate_Hz")
+    if isinstance(sample_rate_hz, list):
+        # Multiple rates (mixed protocol) - use the maximum rate for Nyquist calculation
+        fs = float(max(float(r) for r in sample_rate_hz))
+    else:
+        # Single rate
+        fs = float(sample_rate_hz)
     nyquist_freq = fs / 2
     
     if fs >= 40000:
         # High sampling rate: apply 20 kHz low-pass filter
         filter_cutoff = 20000
         print(f"  High sampling rate ({fs} Hz) detected")
-        print(f"  Applying 20 kHz low-pass filter (pre-processing)...")
+        print(f"  Applying {filter_cutoff/1000:.0f} kHz low-pass filter (pre-processing)...")
     else:
         # Low sampling rate: no filter (avoid over-filtering)
         filter_cutoff = None
         print(f"  Low sampling rate ({fs} Hz) detected")
-        print(f"  Skipping low-pass filter (sampling rate below 40 kHz threshold)...")
+        print(f"  Skipping low-pass filter (sampling rate below threshold)...")
     
     if filter_cutoff is not None and filter_cutoff < nyquist_freq:
         try:
@@ -1096,25 +1135,27 @@ no filter if less than 40khz
             # Reload the filtered data
             df_mv = pd.read_parquet(p / man["tables"]["mv"])
             df_pa = pd.read_parquet(p / man["tables"]["pa"])
+            
+            # Generate filter visualizations only if filter was actually applied
+            print(f"  Generating filter visualizations...")
+            visualize_filter_all_sweeps(bundle_dir, skip_plots=skip_plots, cutoff_hz=filter_cutoff, sampling_rate=fs)
+            print(f"  ✓ Sweep configuration & filtering complete")
         except Exception as e:
             print(f"  ⚠ WARNING: Low-pass filter failed: {e}")
             print(f"  Proceeding with unfiltered data...")
     else:
         print(f"  ℹ No filter applied (sampling rate {fs} Hz below threshold or invalid cutoff)")
-    
-    print(f"  Generating filter visualizations...")
-    visualize_filter_all_sweeps(bundle_dir, skip_plots=skip_plots)
-    print(f"  ✓ Sweep configuration & filtering complete")
+
     
     # Ensure sweep_config is a dict (None when no sweep_config.json exists)
     if sweep_config is None:
         sweep_config = {}
     
     # Auto-skip the pause prompt for automated pipeline (no interactive input)
-    # Check if we're running in non-interactive mode
+    # Check if we're running in non-interactive mode or with no_checkpoints flag
     is_interactive = sys.stdin.isatty()
     
-    if is_interactive:
+    if is_interactive and not no_checkpoints:
         # Pause/resume loop for sweep config inspection (interactive mode only)
         while True:
             response = input("\nContinue to resting membrane potential calculation? (y/n): ").strip().lower()
@@ -1137,6 +1178,7 @@ no filter if less than 40khz
     print(f"\n[Step 3] Resting membrane potential calculation...")
     # Filter to only kept sweeps for all analysis
     kept_sweeps = sweep_config.get("kept_sweeps", [])
+    dropped_sweeps = sweep_config.get("dropped_sweeps", [])
     
     # If no kept_sweeps defined, use all available sweeps
     if not kept_sweeps:
@@ -1145,6 +1187,16 @@ no filter if less than 40khz
             print(f"\n>>> No sweep filter defined - using all {len(kept_sweeps)} sweeps")
     elif VERBOSE:
         print(f"\n>>> Filtering to kept sweeps: {len(kept_sweeps)} sweeps")
+    
+    # Generate sweep visualizations if plots not skipped
+    if not skip_plots:
+        print(f"  Generating sweep visualizations...")
+        try:
+            visualize_sweeps_from_parquet(bundle_dir, kept_sweeps, dropped_sweeps)
+            print(f"  ✓ Sweep visualizations created")
+        except Exception as e:
+            if VERBOSE:
+                print(f"  ⚠ WARNING: Failed to generate sweep visualizations: {e}")
     
     # Filter all dataframes to only include kept sweeps
     df_mv_kept = df_mv[df_mv["sweep"].isin(kept_sweeps)].copy()
@@ -1175,8 +1227,8 @@ no filter if less than 40khz
     print(f"\n✓ Resting Vm mean: {combined_mean:.2f} mV")
     print(f"  Saved to: {out_parq.name}")
     
-    # Skip interactive pause in non-interactive mode
-    if is_interactive:
+    # Skip interactive pause in non-interactive mode or with no_checkpoints flag
+    if is_interactive and not no_checkpoints:
         # Pause/resume loop for RMP inspection
         while True:
             response = input("\nContinue to spike detection? (y/n): ").strip().lower()
@@ -1202,7 +1254,7 @@ no filter if less than 40khz
     df_pa_kept = pd.read_parquet(p / man["tables"]["pa"])
     df_pa_kept = df_pa_kept[df_pa_kept["sweep"].isin(kept_sweeps)].copy()
     df_analysis = pd.read_parquet(p /"analysis.parquet")
-    fs = man["meta"]["sampleRate_Hz"]
+    fs = float(man["meta"]["sampleRate_Hz"])  # Convert from string to float
     
     run_spike_detection(df_mv_kept, df_pa_kept, df_analysis, fs, bundle_dir, 
                        pA_was_replaced=pA_was_replaced, sweep_config=sweep_config,
@@ -1212,7 +1264,7 @@ no filter if less than 40khz
     
     print(f"  ✓ Spike detection complete")
     
-    if is_interactive:
+    if is_interactive and not no_checkpoints:
         # Pause/resume loop for spike detection inspection
         while True:
             response = input("\nContinue to Savitzky-Goyal filtering? (y/n): ").strip().lower()
@@ -1240,7 +1292,7 @@ no filter if less than 40khz
     
     print(f"  ✓ Savitzky-Golay filtering complete")
     
-    if is_interactive:
+    if is_interactive and not no_checkpoints:
         # Pause/resume loop for SavGol inspection
         while True:
             response = input("\nContinue to input resistance calculation? (y/n): ").strip().lower()
@@ -1269,7 +1321,7 @@ no filter if less than 40khz
 
     print(f"  ✓ Input resistance calculation complete")
     
-    if is_interactive:
+    if is_interactive and not no_checkpoints:
         # Pause/resume loop for input resistance inspection
         while True:
             response = input("\nContinue to sag current analysis? (y/n): ").strip().lower()
@@ -1328,7 +1380,7 @@ no filter if less than 40khz
     else:
         print(f"  ⚠ No hyperpolarizing sweeps found - skipping sag analysis")
     
-    if is_interactive:
+    if is_interactive and not no_checkpoints:
         # Pause/resume loop for sag inspection
         while True:
             response = input("\nContinue to finalize results? (y/n): ").strip().lower()

@@ -119,7 +119,7 @@ def get_file_type():
         print("  ✗ Invalid input. Please enter 1 or 2.")
 
 
-def run_abf_pipeline():
+def run_abf_pipeline(no_checkpoints: bool = False):
     """Run ABF analysis pipeline"""
     print("\n" + "="*70)
     print("ABF PIPELINE")
@@ -210,21 +210,22 @@ This pipeline will:
         print("="*70)
         print("All ABF files have been extracted and bundled with parquet files and manifest.json")
         
-        # Pause/resume loop for bundling inspection
-        while True:
-            response = input("\nProceed to analysis? (y/n): ").strip().lower()
-            if response == 'y':
-                break
-            elif response == 'n':
-                print(f"\n⏸ Pipeline paused. You can inspect bundles in:")
-                print(f"  {abf_dir}")
-                print(f"\nWhen ready to resume, type 'resume':")
-                resume_input = input().strip().lower()
-                if resume_input == 'resume':
-                    print("Resuming pipeline...\n")
+        # Pause/resume loop for bundling inspection (skip if no_checkpoints)
+        if not no_checkpoints:
+            while True:
+                response = input("\nProceed to analysis? (y/n): ").strip().lower()
+                if response == 'y':
                     break
-                else:
-                    print("(Type 'resume' to continue)")
+                elif response == 'n':
+                    print(f"\n⏸ Pipeline paused. You can inspect bundles in:")
+                    print(f"  {abf_dir}")
+                    print(f"\nWhen ready to resume, type 'resume':")
+                    resume_input = input().strip().lower()
+                    if resume_input == 'resume':
+                        print("Resuming pipeline...\n")
+                        break
+                    else:
+                        print("(Type 'resume' to continue)")
         
         # Step 2: Run analysis on all bundles
         print(f"\n{'='*70}")
@@ -278,7 +279,7 @@ This pipeline will:
                 # Only process bundles with step, intrinsic, or IV protocols
                 if any(k in protocol for k in ("step", "intrinsic", "iv")):
                     print(f"\nRunning bundle {bundle.name}")
-                    run_for_bundle(str(bundle))
+                    run_for_bundle(str(bundle), no_checkpoints=no_checkpoints)
                     bundles_processed += 1
                 else:
                     print(f"Skipping Bundle (unsupported protocol '{protocol}'): {bundle.name}")
@@ -623,7 +624,7 @@ For each bundle, this will:
         sys.exit(1)
 
 
-def run_nwb_pipeline():
+def run_nwb_pipeline(no_checkpoints: bool = False):
     """Run full NWB analysis pipeline (both steps)"""
     print("\n" + "="*70)
     print("NWB ANALYSIS PIPELINE")
@@ -672,7 +673,12 @@ Note: You will need to provide paths for:
         print("\n" + "="*70)
         print("Data preparation complete!")
         print("="*70)
-        analyze_now = input("\nRun analysis on all bundles now? (y/n): ").strip().lower()
+        
+        # Skip checkpoint if no_checkpoints flag is set
+        if no_checkpoints:
+            analyze_now = "y"  # Auto-proceed
+        else:
+            analyze_now = input("\nRun analysis on all bundles now? (y/n): ").strip().lower()
         
         if analyze_now == "y":
             # Pass the parent directory from data prep to avoid re-prompting
@@ -713,16 +719,22 @@ def main():
     """Main entry point"""
     print_header()
     
+    # Check for command-line arguments
+    no_checkpoints = '--no-checkpoints' in sys.argv
+    if no_checkpoints:
+        print("ℹ Running in non-interactive mode (skipping checkpoints)")
+        sys.argv.remove('--no-checkpoints')  # Remove from sys.argv to avoid breaking other parsers
+    
     file_type = get_file_type()
     
     if file_type == "1":
-        run_abf_pipeline()
+        run_abf_pipeline(no_checkpoints=no_checkpoints)
         print("\n" + "="*70)
         print("✓ PIPELINE COMPLETE")
         print("="*70)
         print()
     else:  # file_type == "2"
-        run_nwb_pipeline()
+        run_nwb_pipeline(no_checkpoints=no_checkpoints)
         # Success message printed by run_nwb_pipeline()
 
 

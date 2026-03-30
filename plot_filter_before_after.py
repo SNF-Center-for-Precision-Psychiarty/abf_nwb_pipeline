@@ -9,10 +9,10 @@ This script loads raw parquet files from a bundle and shows:
 4. Zoomed-in time windows to see noise removal clearly
 
 Usage:
-    python plot_filter_before_after.py /path/to/bundle_dir
+    python plot_filter_before_after.py /path/to/bundle_dir --sweep SWEEP_NUM --cutoff CUTOFF_HZ --sampling-rate SAMPLING_RATE
 
 Example:
-    python plot_filter_before_after.py /path/to/sub_131113
+    python plot_filter_before_after.py /path/to/sub_131113 --sweep 0 --cutoff 20000 --sampling-rate 200000
 """
 
 import numpy as np
@@ -36,7 +36,7 @@ def load_parquet_data_for_sweep(bundle_dir, data_type='mV', sweep_num=0):
     
     Args:
         bundle_dir: Path to bundle directory
-        data_type: 'mV' for voltage or 'pA' for current
+        data_type: 'mV', 'mV_raw', 'pA', or 'pA_raw' for voltage or current (raw or filtered)
         sweep_num: Which sweep to load
         
     Returns:
@@ -44,13 +44,24 @@ def load_parquet_data_for_sweep(bundle_dir, data_type='mV', sweep_num=0):
     """
     bundle_path = Path(bundle_dir)
     
-    # Find the matching parquet file (check both current dir and subdirs)
-    pattern = f"{data_type}_*.parquet"
-    parquet_files = list(bundle_path.glob(pattern))
+    # Determine file pattern based on data_type
+    if 'raw' in data_type:
+        # For raw data: look for files with _raw in the name (e.g., mV_173_raw.parquet)
+        base_type = data_type.replace('_raw', '')
+        pattern = f"{base_type}_*_raw.parquet"
+    else:
+        # For filtered data: pattern will match both mV_173.parquet AND mV_173_raw.parquet
+        # We filter out the _raw ones in the next step
+        pattern = f"{data_type}_*.parquet"
     
-    # If not found in current dir, look in subdirectories
+    # Search for matching files
+    parquet_files = list(bundle_path.glob(pattern))
     if not parquet_files:
         parquet_files = list(bundle_path.rglob(pattern))
+    
+    # For filtered data, explicitly exclude any files with '_raw' in the name
+    if 'raw' not in data_type:
+        parquet_files = [f for f in parquet_files if '_raw' not in f.name]
     
     if not parquet_files:
         raise FileNotFoundError(f"No {pattern} files found in {bundle_dir} or subdirectories")
@@ -89,45 +100,25 @@ def load_parquet_data_for_sweep(bundle_dir, data_type='mV', sweep_num=0):
     return sweep_data
 
 
-def filter_data(data, fs=200000, cutoff=5000, order=4):
-    """Apply 5 kHz Butterworth low-pass filter.
-    
-    Args:
-        data: 1D numpy array of signal
-        fs: Sampling frequency (Hz)
-        cutoff: Cutoff frequency (Hz)
-        order: Filter order
-        
-    Returns:
-        Filtered data (same shape as input)
-    """
-    # Design filter
-    nyquist = fs / 2
-    normalized_cutoff = cutoff / nyquist
-    b, a = signal.butter(order, normalized_cutoff, btype='low')
-    
-    # Apply forward-backward filter (filtfilt)
-    filtered = signal.filtfilt(b, a, data)
-    
-    return filtered
 
 
-def plot_sweep_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs=200000, title_prefix=''):
+def plot_sweep_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs, title_prefix, cutoff_hz: float):
     """Plot before/after filtering for a single sweep.
     
     Args:
         sweep_data_raw: Raw voltage/current data
         sweep_data_filtered: Filtered voltage/current data
         sweep_num: Sweep number (for labeling)
-        fs: Sampling frequency
-        title_prefix: Prefix for plot title (e.g., 'Voltage' or 'Current')
+        fs: Sampling frequency (REQUIRED)
+        title_prefix: Prefix for plot title (e.g., 'Voltage' or 'Current') (REQUIRED)
+        cutoff_hz: Cutoff frequency (Hz) for title display (REQUIRED)
     """
     # Time array (in milliseconds)
     duration = len(sweep_data_raw) / fs
     time_ms = np.linspace(0, duration * 1000, len(sweep_data_raw))
     
     fig, axes = plt.subplots(3, 1, figsize=(14, 10))
-    fig.suptitle(f'{title_prefix} Trace Comparison - Sweep {sweep_num}\n(Before vs After 5 kHz Low-Pass Filter)', 
+    fig.suptitle(f'{title_prefix} Trace Comparison - Sweep {sweep_num}\n(Before vs After {cutoff_hz/1000:.1f} kHz Low-Pass Filter)', 
                  fontsize=14, fontweight='bold')
     
     # Plot 1: Full sweep - Raw data
@@ -188,15 +179,16 @@ def plot_sweep_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs=200
     return fig
 
 
-def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs=200000, title_prefix=''):
+def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs, title_prefix, cutoff_hz: float):
     """Plot frequency spectrum before/after filtering.
     
     Args:
         sweep_data_raw: Raw voltage/current data
         sweep_data_filtered: Filtered voltage/current data
         sweep_num: Sweep number (for labeling)
-        fs: Sampling frequency
-        title_prefix: Prefix for plot title
+        fs: Sampling frequency (REQUIRED)
+        title_prefix: Prefix for plot title (REQUIRED)
+        cutoff_hz: Cutoff frequency (Hz) for visualization (REQUIRED)
     """
     # Compute FFTs - use efficient windowing to reduce noise
     fft_raw = np.abs(np.fft.rfft(sweep_data_raw))  # rfft: only positive frequencies
@@ -213,16 +205,16 @@ def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs
     del fft_raw, fft_filtered
     
     fig, axes = plt.subplots(2, 1, figsize=(14, 8))
-    fig.suptitle(f'{title_prefix} Frequency Spectrum Comparison - Sweep {sweep_num}\n(Before vs After 5 kHz Low-Pass Filter)', 
+    fig.suptitle(f'{title_prefix} Frequency Spectrum Comparison - Sweep {sweep_num}\n(Before vs After {cutoff_hz/1000:.1f} kHz Low-Pass Filter)', 
                  fontsize=14, fontweight='bold')
     
     # Plot 1: Linear scale
     ax1 = axes[0]
     ax1.plot(freqs_plot, fft_raw_plot, 'r-', alpha=0.6, linewidth=1.5, label='Before filter')
     ax1.plot(freqs_plot, fft_filtered_plot, 'b-', alpha=0.8, linewidth=1.5, label='After filter')
-    ax1.axvline(5000, color='green', linestyle='--', linewidth=2, label='5 kHz cutoff')
-    ax1.fill_between([0, 5000], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='green', label='Kept')
-    ax1.fill_between([5000, 100000], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='red', label='Removed')
+    ax1.axvline(cutoff_hz, color='green', linestyle='--', linewidth=2, label=f'{cutoff_hz/1000:.1f} kHz cutoff')
+    ax1.fill_between([0, cutoff_hz], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='green', label='Kept')
+    ax1.fill_between([cutoff_hz, 100000], 0, max(fft_raw_plot)*1.1, alpha=0.1, color='red', label='Removed')
     ax1.set_ylabel('Magnitude', fontsize=10)
     ax1.set_title('Linear Scale - See Low Frequencies Clearly', fontsize=11, fontweight='bold')
     ax1.grid(True, alpha=0.3)
@@ -233,9 +225,9 @@ def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs
     ax2 = axes[1]
     ax2.semilogy(freqs_plot, fft_raw_plot, 'r-', alpha=0.6, linewidth=1.5, label='Before filter')
     ax2.semilogy(freqs_plot, fft_filtered_plot, 'b-', alpha=0.8, linewidth=1.5, label='After filter')
-    ax2.axvline(5000, color='green', linestyle='--', linewidth=2, label='5 kHz cutoff')
-    ax2.fill_between([0, 5000], 1, 1e10, alpha=0.1, color='green', label='Kept')
-    ax2.fill_between([5000, 100000], 1, 1e10, alpha=0.1, color='red', label='Removed')
+    ax2.axvline(cutoff_hz, color='green', linestyle='--', linewidth=2, label=f'{cutoff_hz/1000:.1f} kHz cutoff')
+    ax2.fill_between([0, cutoff_hz], 1, 1e10, alpha=0.1, color='green', label='Kept')
+    ax2.fill_between([cutoff_hz, 100000], 1, 1e10, alpha=0.1, color='red', label='Removed')
     ax2.set_xlabel('Frequency (Hz)', fontsize=10)
     ax2.set_ylabel('Magnitude (log scale)', fontsize=10)
     ax2.set_title('Log Scale - See High Frequencies and Attenuation Clearly', fontsize=11, fontweight='bold')
@@ -245,7 +237,7 @@ def plot_frequency_comparison(sweep_data_raw, sweep_data_filtered, sweep_num, fs
     ax2.set_ylim([1, 1e10])
     
     # Add annotation
-    ax2.text(0.02, 0.98, 'Notice how BLUE drops below RED\nafter 5 kHz = noise being removed', 
+    ax2.text(0.02, 0.98, 'Notice how BLUE drops below RED\nafter ' + f'{cutoff_hz/1000:.1f} kHz = noise being removed', 
             transform=ax2.transAxes, fontsize=9, verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
     
@@ -258,10 +250,10 @@ def main():
     
     # Parse command line arguments
     if len(sys.argv) < 2:
-        print("Usage: python plot_filter_before_after.py /path/to/bundle_dir [--sweep SWEEP_NUM]")
+        print("Usage: python plot_filter_before_after.py /path/to/bundle_dir --sweep SWEEP_NUM --cutoff CUTOFF_HZ --sampling-rate SAMPLING_RATE")
         print("\nExample:")
-        print("  python plot_filter_before_after.py /path/to/sub_131113          # Plot sweep 0")
-        print("  python plot_filter_before_after.py /path/to/sub_131113 --sweep 5  # Plot sweep 5")
+        print("  python plot_filter_before_after.py /path/to/sub_131113 --sweep 0 --cutoff 20000 --sampling-rate 200000")
+        print("  python plot_filter_before_after.py /path/to/sub_131113 --sweep 5 --cutoff 5000 --sampling-rate 200000")
         sys.exit(1)
     
     bundle_dir = sys.argv[1]
@@ -273,6 +265,32 @@ def main():
         if idx + 1 < len(sys.argv):
             sweep_to_plot = int(sys.argv[idx + 1])
     
+    # Optional: specify cutoff frequency (REQUIRED - must be passed in)
+    if '--cutoff' not in sys.argv:
+        print("ERROR: --cutoff parameter is required")
+        print("Usage: python plot_filter_before_after.py /path/to/bundle_dir --sweep SWEEP_NUM --cutoff CUTOFF_HZ --sampling-rate SAMPLING_RATE")
+        sys.exit(1)
+    
+    idx = sys.argv.index('--cutoff')
+    if idx + 1 >= len(sys.argv):
+        print("ERROR: --cutoff requires a value")
+        sys.exit(1)
+    
+    cutoff_hz = float(sys.argv[idx + 1])
+    
+    # Optional: specify sampling rate (REQUIRED - must be passed in)
+    if '--sampling-rate' not in sys.argv:
+        print("ERROR: --sampling-rate parameter is required")
+        print("Usage: python plot_filter_before_after.py /path/to/bundle_dir --sweep SWEEP_NUM --cutoff CUTOFF_HZ --sampling-rate SAMPLING_RATE")
+        sys.exit(1)
+    
+    idx = sys.argv.index('--sampling-rate')
+    if idx + 1 >= len(sys.argv):
+        print("ERROR: --sampling-rate requires a value")
+        sys.exit(1)
+    
+    sampling_rate = float(sys.argv[idx + 1])
+    
     bundle_path = Path(bundle_dir)
     
     if not bundle_path.exists():
@@ -283,21 +301,24 @@ def main():
     print("BEFORE/AFTER FILTER VISUALIZATION")
     print("="*70)
     print(f"Bundle: {bundle_path}")
+    print(f"Sampling rate: {sampling_rate} Hz")
     print(f"Plotting sweep {sweep_to_plot}")
+    print(f"Filter cutoff: {cutoff_hz/1000:.1f} kHz")
     
     try:
         # Load voltage data for specific sweep
         print(f"\nLoading voltage (mV) data for sweep {sweep_to_plot}...")
-        sweep_mv_raw = load_parquet_data_for_sweep(bundle_dir, 'mV', sweep_to_plot)
         
-        # Apply filter
-        print("Applying 5 kHz Butterworth filter...")
-        sweep_mv_filtered = filter_data(sweep_mv_raw)
+        # Load raw (unfiltered) voltage data from backup
+        sweep_mv_raw = load_parquet_data_for_sweep(bundle_dir, 'mV_raw', sweep_to_plot)
+        
+        # Load filtered voltage data (already has filter applied from preprocessing step)
+        sweep_mv_filtered = load_parquet_data_for_sweep(bundle_dir, 'mV', sweep_to_plot)
         
         # Create plots
         print("Generating voltage trace comparison plots...")
         fig1 = plot_sweep_comparison(sweep_mv_raw, sweep_mv_filtered, sweep_to_plot, 
-                                    title_prefix='VOLTAGE (mV)')
+                                    fs=sampling_rate, title_prefix='VOLTAGE (mV)', cutoff_hz=cutoff_hz)
         output_dir = bundle_path / 'filter_visualizations'
         output_dir.mkdir(exist_ok=True)
         output_file1 = output_dir / f'voltage_before_after_sweep_{sweep_to_plot}.jpeg'
@@ -309,7 +330,7 @@ def main():
         
         print("Generating voltage frequency spectrum comparison plots...")
         fig2 = plot_frequency_comparison(sweep_mv_raw, sweep_mv_filtered, sweep_to_plot,
-                                        title_prefix='VOLTAGE (mV)')
+                                        fs=sampling_rate, title_prefix='VOLTAGE (mV)', cutoff_hz=cutoff_hz)
         output_file2 = output_dir / f'voltage_spectrum_before_after_sweep_{sweep_to_plot}.jpeg'
         fig2.savefig(output_file2, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file2.name}")
@@ -323,14 +344,16 @@ def main():
         
         # Load and plot current data
         print(f"\nLoading current (pA) data for sweep {sweep_to_plot}...")
-        sweep_pa_raw = load_parquet_data_for_sweep(bundle_dir, 'pA', sweep_to_plot)
         
-        print("Applying 5 kHz Butterworth filter...")
-        sweep_pa_filtered = filter_data(sweep_pa_raw)
+        # Load raw (unfiltered) current data from backup
+        sweep_pa_raw = load_parquet_data_for_sweep(bundle_dir, 'pA_raw', sweep_to_plot)
+        
+        # Load filtered current data (already has filter applied from preprocessing step)
+        sweep_pa_filtered = load_parquet_data_for_sweep(bundle_dir, 'pA', sweep_to_plot)
         
         print("Generating current trace comparison plots...")
         fig3 = plot_sweep_comparison(sweep_pa_raw, sweep_pa_filtered, sweep_to_plot,
-                                    title_prefix='CURRENT (pA)')
+                                    fs=sampling_rate, title_prefix='CURRENT (pA)', cutoff_hz=cutoff_hz)
         output_file3 = output_dir / f'current_before_after_sweep_{sweep_to_plot}.jpeg'
         fig3.savefig(output_file3, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file3.name}")
@@ -340,7 +363,7 @@ def main():
         
         print("Generating current frequency spectrum comparison plots...")
         fig4 = plot_frequency_comparison(sweep_pa_raw, sweep_pa_filtered, sweep_to_plot,
-                                        title_prefix='CURRENT (pA)')
+                                        fs=sampling_rate, title_prefix='CURRENT (pA)', cutoff_hz=cutoff_hz)
         output_file4 = output_dir / f'current_spectrum_before_after_sweep_{sweep_to_plot}.jpeg'
         fig4.savefig(output_file4, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file4.name}")
@@ -364,7 +387,7 @@ def main():
         print(f"\nAll files saved to: {output_dir}")
         print(f"\nWhat to look for:")
         print(f"  • Time domain: RED wiggly line (noise) vs BLUE smooth line (clean signal)")
-        print(f"  • Frequency: RED line high above 5 kHz, BLUE line drops off")
+        print(f"  • Frequency: RED line high above {cutoff_hz/1000:.1f} kHz, BLUE line drops off")
         print(f"  • Zoomed window: Clear difference between noisy and filtered signal")
         
     except Exception as e:

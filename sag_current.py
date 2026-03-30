@@ -61,6 +61,12 @@ def measure_voltage_response(
     if len(sweep_data) == 0:
         return None
 
+    # Remove NaN values (important for mixed protocol files)
+    sweep_data = sweep_data[sweep_data['value'].notna()]
+    
+    if len(sweep_data) == 0:
+        return None
+
     times = sweep_data['t_s'].values
     voltages = sweep_data['value'].values
 

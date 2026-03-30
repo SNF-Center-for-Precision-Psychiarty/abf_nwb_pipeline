@@ -149,11 +149,11 @@ def run_sav_gol(df, df_analysis, fs, bundle_path, sweep_config=None, skip_plots=
                 debug_first_sweep = False
             
             df_sweep_baseline = df_sweep_all[(df_sweep_all["t_s"] >= baseline_start_abs) & 
-                                             (df_sweep_all["t_s"] <= baseline_end_abs)]
+                                             (df_sweep_all["t_s"] < baseline_end_abs)]
         else:
             # For single protocol: use relative times directly
             df_sweep_baseline = df_sweep_all[(df_sweep_all["t_s"] >= baseline_start_rel) & 
-                                             (df_sweep_all["t_s"] <= baseline_end_rel)]
+                                             (df_sweep_all["t_s"] < baseline_end_rel)]
         
         if VERBOSE and debug_first_sweep is False and sweep_id == 4:
             print(f"  Baseline samples extracted: {len(df_sweep_baseline)}")
@@ -250,11 +250,11 @@ def run_sav_gol(df, df_analysis, fs, bundle_path, sweep_config=None, skip_plots=
             # For mixed protocol: times in sweep_config are already absolute
             baseline_start_abs = baseline_start_rel  # Actually absolute, misnamed variable
             baseline_end_abs = baseline_end_rel      # Actually absolute, misnamed variable
-            group = df_sweep[(df_sweep["t_s"] >= baseline_start_abs) & (df_sweep["t_s"] <= baseline_end_abs)]
+            group = df_sweep[(df_sweep["t_s"] >= baseline_start_abs) & (df_sweep["t_s"] < baseline_end_abs)]
         else:
             baseline_start_abs = baseline_start_rel
             baseline_end_abs = baseline_end_rel
-            group = df_sweep[(df_sweep["t_s"] >= baseline_start_rel) & (df_sweep["t_s"] <= baseline_end_rel)]
+            group = df_sweep[(df_sweep["t_s"] >= baseline_start_rel) & (df_sweep["t_s"] < baseline_end_rel)]
         
         if len(group) == 0:
             print(f"  No baseline data for sweep {sweep_id}")
