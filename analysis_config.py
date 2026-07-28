@@ -80,6 +80,33 @@ RESPONSE_PADDING_S = 0.10         # Extra 100ms after stimulus for response wind
 BASELINE_FALLBACK_S = 0.01        # Last resort: use first 10ms if baseline detection fails
 
 # ============================================================================
+# Input Resistance Parameters
+# ============================================================================
+
+# Only sweeps below this injected current enter the I-V fit. Depolarizing
+# sub-threshold sweeps are excluded: active conductances (persistent Na, A-type
+# K) make the I-V curve non-linear above rest and bias the slope.
+HYPERPOLARIZING_THRESHOLD_PA = 0.0
+
+# Steady-state measurement window, taken at the END of the stimulus so the
+# capacitive charging transient and the HCN sag have both settled. Same
+# definition as v_steady in sag_current.py.
+STEADY_STATE_WINDOW_S = 0.080   # 80ms window
+STEADY_STATE_BUFFER_S = 0.001   # 1ms buffer before stimulus end
+
+# Minimum number of sweeps needed to fit the I-V line
+MIN_IV_FIT_POINTS = 2
+
+# Minimum span of injected current across those sweeps. Guards against fitting a
+# slope through points that all sit at the same command level, where the spread
+# is measurement noise rather than signal.
+MIN_IV_CURRENT_RANGE_PA = 5.0
+
+# The I-V slope comes out in mV/pA, which is 1e-3 V / 1e-12 A = 1e9 Ohm = GOhm.
+# Multiply by 1000 to report input resistance in MOhm.
+PA_MV_SLOPE_TO_MOHM = 1000.0
+
+# ============================================================================
 # Artifact Detection Parameters
 # ============================================================================
 

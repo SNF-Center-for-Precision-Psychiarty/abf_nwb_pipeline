@@ -281,10 +281,18 @@ This standardization allows downstream analysis (spike detection, RMP, etc.) to 
 **Purpose**: Calculate membrane input resistance from hyperpolarizing current steps
 
 **What it does**:
-1. Identifies negative-current sweeps (below 0 pA)
-2. Finds minimum voltage during stimulus (max hyperpolarization)
-3. Calculates ΔV (voltage deflection from baseline)
-4. Calculates R_input = ΔV / I_injected (Ohm's law)
+1. Identifies **all** negative-current sweeps (below 0 pA) from `analysis.parquet`
+2. For each, measures the **steady-state** voltage and current — the mean over the
+   last 80ms of the stimulus (1ms buffer before the step ends), by which point the
+   capacitive charging transient and the HCN sag have both settled
+3. Fits `V = R·I + V₀` across those sweeps by least squares
+4. Reports the slope as input resistance in MΩ (the slope is mV/pA = GΩ, ×1000 → MΩ)
+
+**Why the whole hyperpolarizing branch**: a single step — or a mean taken over the
+full stimulus window — mixes the peak deflection with the sag relaxation, so
+cell-to-cell differences in HCN current show up as differences in input resistance.
+Depolarizing sub-threshold sweeps are excluded for the same reason: active
+conductances make the I-V curve non-linear above rest and bias the slope.
 
 **Why this matters**:
 - Measures membrane integrity
@@ -293,7 +301,10 @@ This standardization allows downstream analysis (spike detection, RMP, etc.) to 
 
 **Outputs**:
 - Input resistance values in `analysis.csv`
-- `Input_Resistance/` - Voltage response plots for hyperpolarizing steps
+- `manifest.json` also records the fit's `input_resistance_r2`,
+  `input_resistance_n_sweeps` and the sweeps used — a low R² flags a non-ohmic
+  or unstable recording
+- `Input_Resistance/InputResistance.jpeg` - I-V curve with the fitted line
 
 ---
 
