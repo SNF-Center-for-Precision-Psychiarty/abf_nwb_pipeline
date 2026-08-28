@@ -7,6 +7,18 @@ A unified pipeline for analyzing **intracellular electrophysiology recordings** 
 
 The pipeline performs **sweep classification, spike detection, membrane property analysis, and visualization** for current-clamp and voltage-clamp experiments.
 
+> **Note — active development has moved.**
+> This pipeline is now maintained inside the consolidated analysis repository
+> [`manolistsivou-cpu/intrinsic_ephys_data_meta_analysis`](https://github.com/manolistsivou-cpu/intrinsic_ephys_data_meta_analysis),
+> under `2. Electrophysiology-analysis-for-Intrinsic-properties/`, together with the
+> downstream master-table and maturity-index code that consumes its output.
+> Full history was carried over with `git subtree`, so nothing here is lost.
+>
+> This repository is kept for reference. The newest commits live on the
+> `fix/input-resistance-iv-fit` branch here, not on `main` — in particular the
+> fix that computes `current_threshold_pA` from depolarizing (> 0 pA) sweeps only.
+> Prefer the consolidated repository for new work.
+
 ---
 
 ## 📋 Table of Contents
