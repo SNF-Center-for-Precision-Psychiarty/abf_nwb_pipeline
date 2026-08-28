@@ -1408,11 +1408,23 @@ def run_spike_detection(df, df_pA, df_analysis, fs, bundle_path, pA_was_replaced
     dbg(f"Sweeps with spikes: {(updated_analysis['spike_frequency_Hz'] > 0).sum()}")
     dbg(f"Current values (first 10): {updated_analysis['avg_injected_current_pA'].head(10).tolist()}")
     
-    rows_with_spikes = updated_analysis[updated_analysis["spike_frequency_Hz"] > 0]
+    # Depolarizing sweeps only: a spontaneously active cell can fire on a
+    # hyperpolarizing or holding sweep, and that is not a current threshold --
+    # the cell was never driven to it. Without the `> 0` restriction such a cell
+    # reports e.g. -100 pA. Rows are already sorted by current ascending, so
+    # iloc[0] below is the lowest positive current that produced a spike.
+    if "avg_injected_current_pA" in updated_analysis.columns:
+        rows_with_spikes = updated_analysis[
+            (updated_analysis["spike_frequency_Hz"] > 0)
+            & (updated_analysis["avg_injected_current_pA"] > 0)
+        ]
+    else:
+        rows_with_spikes = updated_analysis[updated_analysis["spike_frequency_Hz"] > 0]
 
     if rows_with_spikes.empty:
         first_spike_current = np.nan 
-        dbg("WARNING: No spikes detected in any sweep. Current threshold is NaN")
+        dbg("WARNING: No spikes on any depolarizing (> 0 pA) sweep. "
+            "Current threshold is NaN")
     else:
         # Get the first sweep with spikes and its current value
         first_spike_row = rows_with_spikes.iloc[0]
