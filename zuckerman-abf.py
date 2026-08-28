@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import pyabf
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -168,17 +169,43 @@ def save_bundle(file_id: str,
         json.dump(manifest, f, indent=2, default=str)
 
 
+def _remove_existing_bundles(parent_dir: Path, file_id: str):
+    """
+    Delete every existing bundle directory for this file_id (any cellNum
+    suffix) so re-bundling starts from a clean folder. This guarantees:
+      - stale analysis outputs (analysis.csv, plots, archives) from a
+        previous run don't survive inside the re-created bundle, and
+      - if the cellNum was corrected in the Excel log sheet, the bundle
+        under the OLD name is removed instead of lingering as a duplicate.
+    Only directories that actually look like bundles (manifest.json or
+    mV parquet present) are deleted.
+    """
+    for d in Path(parent_dir).glob(f"{file_id}_*"):
+        if not d.is_dir():
+            continue
+        looks_like_bundle = (d / "manifest.json").exists() or any(d.glob("mV_*.parquet"))
+        if looks_like_bundle:
+            shutil.rmtree(d, ignore_errors=True)
+            print(f"[CLEAN] Removed old bundle: {d.name}")
+
+
 # ----------------------------
 # Main driver
 # ----------------------------
 def process_mouse_folder(
     mouse_dir: str,
     excel_path: str,
-    out_root: str
+    out_root: str,
+    skip_existing: bool = True
 ):
     """
     Walk mouse_dir for *.abf, parse each, match to Excel by (recDate, fileNum),
     and write bundles with mv/parquet, pa/parquet, and manifest.json.
+
+    skip_existing: when True (default), an ABF file whose bundle directory
+    (<abf_parent>/<file_id>_<cellNum>/manifest.json) already exists is left
+    untouched, so the pipeline can be re-run incrementally on a folder that
+    mixes new and already-bundled recordings. Pass False to re-bundle everything.
     """
     meta_map = load_excel_meta(excel_path)
     Path(out_root).mkdir(parents=True, exist_ok=True)
@@ -191,6 +218,8 @@ def process_mouse_folder(
         print(f"[WARN] No ABF files found in {mouse_dir} or its subfolders")
         return
 
+    n_bundled = 0
+    n_skipped = 0
     for abf_path in abf_files:
         try:
             recDate, fileNum, file_id = parse_abf_filename(abf_path)
@@ -206,6 +235,15 @@ def process_mouse_folder(
 
             meta_full = meta_map[key]
 
+            # Bundle name is known from filename + Excel alone, so the
+            # already-bundled check runs before the expensive ABF load.
+            cell_num_probe = re.sub(r"\.0+$", "", str(meta_full.get("cellNum")).strip())
+            existing_bundle = Path(abf_path).parent / f"{file_id}_{cell_num_probe}"
+            if skip_existing and (existing_bundle / "manifest.json").exists():
+                print(f"[SKIP] Already bundled: {file_id} -> {existing_bundle}")
+                n_skipped += 1
+                continue
+
             df_mV, df_pA, abf_meta = build_long_tables_from_abf(abf_path)
 
             meta_full.update(abf_meta)
@@ -220,7 +258,11 @@ def process_mouse_folder(
             # Use the ABF file's parent directory as the output root
             # so bundles are created in the same directory as the ABF file
             abf_parent_dir = str(Path(abf_path).parent)
-            
+
+            # We only get here when (re-)bundling this file: wipe any old
+            # bundle dir for it first so the new one is a true overwrite.
+            _remove_existing_bundles(Path(abf_parent_dir), file_id)
+
             save_bundle(
                 file_id=file_id,
                 cell_num = cell_num,
@@ -231,9 +273,13 @@ def process_mouse_folder(
                 out_root=abf_parent_dir
             )
             print(f"[OK] {file_id} -> {abf_parent_dir}/{file_id}_{cell_num}")
+            n_bundled += 1
 
         except Exception as e:
             print(f"[ERROR] {abf_path}: {e}")
+
+    print(f"\nBundling summary: {n_bundled} new bundle(s) created, "
+          f"{n_skipped} already-bundled file(s) skipped.")
 
 
 # ----------------------------

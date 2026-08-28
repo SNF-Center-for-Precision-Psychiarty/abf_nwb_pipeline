@@ -117,12 +117,33 @@ def get_file_type():
         print("  ✗ Invalid input. Please enter 1 or 2.")
 
 
-def run_abf_pipeline(no_checkpoints: bool = False):
-    """Run ABF analysis pipeline"""
+def run_abf_pipeline(no_checkpoints: bool = False, force: bool = False,
+                     reanalyze: bool = False):
+    """Run ABF analysis pipeline.
+
+    force: re-bundle and re-analyze everything, even bundles that already
+    have completed analysis output. Default (False) is incremental: only
+    new ABF files are bundled and only bundles without analysis.csv are run.
+
+    reanalyze: skip bundling entirely and run the analysis on every existing
+    bundle (parquet directory) found in the chosen folder, whether or not it
+    already has analysis output. Use after changing analysis parameters to
+    refresh results without touching the raw ABF extraction.
+    """
     print("\n" + "="*70)
-    print("ABF PIPELINE")
+    print("ABF PIPELINE" + ("  [RE-ANALYZE MODE]" if reanalyze else ""))
     print("="*70)
-    print("""
+    if reanalyze:
+        print("""
+Re-analyze mode: bundling is skipped. Every existing bundle (parquet
+directory with manifest.json) in the chosen folder will be re-analyzed:
+     - Resting membrane potential
+     - Spike detection
+     - Savitzky-Golay filtering
+     - Input resistance calculation
+""")
+    else:
+        print("""
 This pipeline will:
   1. Read all .abf files in a directory
   2. Parse ABF metadata (recording date, sweep info, etc.)
@@ -134,16 +155,27 @@ This pipeline will:
      - Savitzky-Golay filtering
      - Input resistance calculation
 """)
-    
+
     # Prompt for the ABF folder directory
     while True:
-        abf_dir = input("Enter the directory path containing ABF files: ").strip()
+        prompt_txt = ("Enter the directory containing the bundles to re-analyze: "
+                      if reanalyze else
+                      "Enter the directory path containing ABF files: ")
+        abf_dir = input(prompt_txt).strip()
         if not abf_dir:
             print("  ✗ Please enter a path.")
             continue
         if not os.path.isdir(abf_dir):
             print(f"  ✗ Directory not found: {abf_dir}")
             continue
+        if reanalyze:
+            # Re-analyze mode needs bundles, not raw ABF files
+            manifests = list(Path(abf_dir).rglob("manifest.json"))
+            if not manifests:
+                print(f"  ✗ No bundles (manifest.json) found in {abf_dir} or its subfolders")
+                continue
+            print(f"\n✓ Found {len(manifests)} bundle(s) in {abf_dir} and its subfolders")
+            break
         # Check for ABF files (including subfolders)
         abf_files = list(Path(abf_dir).rglob("*.abf"))
         if not abf_files:
@@ -151,19 +183,21 @@ This pipeline will:
             continue
         print(f"\n✓ Found {len(abf_files)} ABF file(s) in {abf_dir} and its subfolders")
         break
-    
-    # Prompt for Excel metadata path
-    while True:
-        excel_path = input("Enter the path to the Excel metadata file: ").strip()
-        if not excel_path:
-            print("  ✗ Please enter a path.")
-            continue
-        if not os.path.isfile(excel_path):
-            print(f"  ✗ File not found: {excel_path}")
-            continue
-        print(f"✓ Using metadata: {excel_path}")
-        break
-    
+
+    # Prompt for Excel metadata path (only needed for bundling; re-analyze
+    # mode reads everything from the bundles' manifest.json + parquets)
+    if not reanalyze:
+        while True:
+            excel_path = input("Enter the path to the Excel metadata file: ").strip()
+            if not excel_path:
+                print("  ✗ Please enter a path.")
+                continue
+            if not os.path.isfile(excel_path):
+                print(f"  ✗ File not found: {excel_path}")
+                continue
+            print(f"✓ Using metadata: {excel_path}")
+            break
+
     print(f"\nLaunching ABF pipeline...")
     
     # Import and run zuckerman-abf functions directly to avoid subprocess stdin issues
@@ -177,37 +211,30 @@ This pipeline will:
         zuckerman = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(zuckerman)
         
-        # Step 1: Bundle ABF files using Excel metadata (skip if bundles already exist)
-        abf_path = Path(abf_dir)
-        # detect existing bundle directories (manifest.json or mv_/pa_ parquet files)
-        existing_bundles = []
-        for d in abf_path.iterdir():
-            if not d.is_dir():
-                continue
-            if (d / "manifest.json").exists():
-                existing_bundles.append(d)
-                continue
-            mv_found = any(d.glob("mv_*.parquet"))
-            pa_found = any(d.glob("pa_*.parquet"))
-            if mv_found and pa_found:
-                existing_bundles.append(d)
-
-        if existing_bundles:
-            print(f"\nFound {len(existing_bundles)} existing bundle(s). Skipping bundle creation and proceeding to analysis.")
+        # Step 1: Bundle ABF files using Excel metadata.
+        # Incremental by default: ABF files whose bundle directory already
+        # exists are skipped inside process_mouse_folder, so new recordings
+        # dropped into a folder with existing bundles still get bundled.
+        # Re-analyze mode skips bundling entirely (existing parquets are reused).
+        if reanalyze:
+            print(f"\n--- Step 1 skipped (re-analyze mode): using existing bundles ---")
         else:
             print(f"\n--- Step 1: Creating bundles from ABF files ---")
+            if force:
+                print("[--force] Re-bundling all ABF files, existing bundles will be overwritten.")
             zuckerman.process_mouse_folder(
                 mouse_dir=abf_dir,
                 excel_path=excel_path,
-                out_root=abf_dir
+                out_root=abf_dir,
+                skip_existing=not force
             )
-        
-        # STEP 1: After bundling complete
-        print(f"\n{'='*70}")
-        print("✓ STEP 1: BUNDLE CREATION COMPLETE")
-        print("="*70)
-        print("All ABF files have been extracted and bundled with parquet files and manifest.json")
-        
+
+            # STEP 1: After bundling complete
+            print(f"\n{'='*70}")
+            print("✓ STEP 1: BUNDLE CREATION COMPLETE")
+            print("="*70)
+            print("All ABF files have been extracted and bundled with parquet files and manifest.json")
+
         # Pause/resume loop for bundling inspection (skip if no_checkpoints)
         if not no_checkpoints:
             while True:
@@ -258,9 +285,18 @@ This pipeline will:
             print(f"  • {bundle.relative_to(abf_path)}")
         
         bundles_processed = 0
+        bundles_skipped_analyzed = 0
         for bundle in bundle_dirs:
             manifest_path = bundle / "manifest.json"
             try:
+                # analysis.csv is written in the finalize step, after every
+                # analysis stage has completed - its presence marks a bundle
+                # as already analyzed. --force and --reanalyze both override.
+                if not force and not reanalyze and (bundle / "analysis.csv").exists():
+                    print(f"[SKIP] Already analyzed (analysis.csv present): {bundle.name}")
+                    bundles_skipped_analyzed += 1
+                    continue
+
                 with open(manifest_path, "r") as f:
                     man = json.load(f)
                 meta = man.get("meta") or {}
@@ -268,12 +304,12 @@ This pipeline will:
                     print(f"Skipping {bundle.name} (manifest has no metadata)")
                     continue
                 protocol = str(meta.get("protocol", "")).lower()
-                
+
                 # Skip RAMP protocols - not suitable for spike analysis
                 if "ramp" in protocol:
                     print(f"Skipping Bundle (ramp protocol): {bundle.name}")
                     continue
-                
+
                 # Only process bundles with step, intrinsic, or IV protocols
                 if any(k in protocol for k in ("step", "intrinsic", "iv")):
                     print(f"\nRunning bundle {bundle.name}")
@@ -285,12 +321,15 @@ This pipeline will:
                 import traceback
                 print(f"ERROR processing bundle {bundle.name}: {e}")
                 traceback.print_exc()
-        
+
         # FINAL CHECKPOINT: Entire ABF pipeline
         print(f"\n{'='*70}")
         print("✓ FINAL CHECKPOINT: ABF ANALYSIS PIPELINE COMPLETE!")
         print("="*70)
         print(f"Successfully processed {bundles_processed} bundle(s)")
+        if bundles_skipped_analyzed:
+            print(f"Skipped {bundles_skipped_analyzed} already-analyzed bundle(s) "
+                  f"(re-run with --force to re-analyze them)")
         print(f"All results saved to: {abf_dir}")
         print()
         
@@ -733,11 +772,28 @@ def main():
     if no_checkpoints:
         print("ℹ Running in non-interactive mode (skipping checkpoints)")
         sys.argv.remove('--no-checkpoints')  # Remove from sys.argv to avoid breaking other parsers
-    
+
+    force = '--force' in sys.argv
+    if force:
+        print("ℹ --force: re-bundling and re-analyzing everything, including already-analyzed bundles")
+        sys.argv.remove('--force')
+
+    reanalyze = '--reanalyze' in sys.argv
+    if reanalyze:
+        print("ℹ --reanalyze: skipping bundling, re-running analysis on all existing bundles (ABF only)")
+        sys.argv.remove('--reanalyze')
+
+    # --force and --reanalyze are batch re-run modes: they imply
+    # --no-checkpoints so the analysis runs straight through without
+    # interactive pauses.
+    if (force or reanalyze) and not no_checkpoints:
+        no_checkpoints = True
+        print("ℹ Checkpoints disabled automatically (implied by --force/--reanalyze)")
+
     file_type = get_file_type()
-    
+
     if file_type == "1":
-        run_abf_pipeline(no_checkpoints=no_checkpoints)
+        run_abf_pipeline(no_checkpoints=no_checkpoints, force=force, reanalyze=reanalyze)
         print("\n" + "="*70)
         print("✓ PIPELINE COMPLETE")
         print("="*70)
